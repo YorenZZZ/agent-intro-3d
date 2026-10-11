@@ -58,6 +58,8 @@ cd claude-intro-3d
    ```
 
    `--core` 是胸前发光徽记在首帧里的位置，`--hair-zone` 是只在头部范围里抠掉发丝缝隙背景的区域，`--drop` 可去掉图生视频偶尔出现的叠化鬼影帧。脚本开头的注释有全部参数说明。
+
+   合成后运行 `tools/clip-parts.sh split`：人物视频约 15MB，仓库里按约 700KB 分片存放在 `Resources/clip/`（附 SHA-256），`build.sh` 构建时自动拼回，测试会检查分片与视频一致。
 3. 换片后要逐帧量人物最高点、最右伸展和各动作时段，同步 `Resources/web/intro.js` 里的时间轴；总时长写在 `intro.js`、`Sources/main.swift`、`Resources/web/index.html` 三处，测试会检查三者一致。
 4. `tools/build-portrait.sh` 从首帧切出静态备用图层，`tools/make-icon.sh` 生成 App 图标，最后重新运行 `./build.sh --install`。
 
@@ -70,6 +72,7 @@ cd claude-intro-3d
 | `Resources/web/index.html` | 承载动画的页面和背景遮罩 |
 | `Resources/web/layers/` | 人物视频、静态备用人物、标题和无人机图层 |
 | `art/` | 抠好的人物与无人机原始图层 |
+| `Resources/clip/` | 人物视频的分片和 SHA-256（`tools/clip-parts.sh`） |
 | `tools/` | 合成人物视频、抠图、烘焙图层、录示范、生成图标的脚本 |
 | `build.sh` | 编译、组装、签名、安装和卸载 |
 | `tests/intro.test.cjs` | 问候语、图层引用、时长一致性等检查 |

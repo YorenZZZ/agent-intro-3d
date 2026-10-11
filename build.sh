@@ -55,6 +55,8 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 rm -rf "$iconset" "$build/icon-1024.png"
+# Her clip is kept as parts (tools/clip-parts.sh); a fresh clone has only those.
+[[ -f "$root/Resources/web/layers/awakening.mov" ]] || "$root/tools/clip-parts.sh" join
 ditto "$root/Resources/web" "$app/Contents/Resources/web"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 

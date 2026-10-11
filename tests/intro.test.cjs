@@ -3,6 +3,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const crypto = require('node:crypto')
 
 const intro = require('../Resources/web/intro.js')
 const web = path.join(__dirname, '..', 'Resources', 'web')
@@ -52,7 +53,7 @@ test('with her clip, the markup leaves a slot for it instead of the still', () =
   assert.equal((markup.match(/<i class="moving"><\/i>/g) || []).length, 1)
   assert.ok(markup.includes('layers/drone.webp'), 'drone')
   assert.ok(!markup.includes('layers/body.webp'), 'body only in the still fallback')
-  assert.ok(fs.statSync(path.join(web, intro.CLIP)).size > 100000, 'the clip exists')
+  assert.ok(clip().length > 100000, 'the clip exists')
   const page = fs.readFileSync(path.join(web, 'index.html'), 'utf8')
   assert.match(page, /media-src 'self' file:/, 'the page may load the local clip')
 })
@@ -115,6 +116,23 @@ test('the lettering stays centred in any window; her whole movement fills it, ne
   }
 })
 
+// Her clip, or (in a fresh clone, before build.sh joins it) its parts.
+const parts = path.join(__dirname, '..', 'Resources', 'clip')
+const clip = () => {
+  const file = path.join(web, intro.CLIP)
+  if (fs.existsSync(file)) return fs.readFileSync(file)
+  return Buffer.concat(fs.readdirSync(parts).filter(name => /\.mov\.[a-z]{2}$/.test(name)).sort()
+    .map(name => fs.readFileSync(path.join(parts, name))))
+}
+
+test('the clip in the repository is the clip she plays', () => {
+  const [sum] = fs.readFileSync(path.join(parts, 'awakening.mov.sha256'), 'utf8').split(/\s+/)
+  const joined = Buffer.concat(fs.readdirSync(parts).filter(name => /\.mov\.[a-z]{2}$/.test(name)).sort()
+    .map(name => fs.readFileSync(path.join(parts, name))))
+  assert.equal(crypto.createHash('sha256').update(joined).digest('hex'), sum, 'the parts are not the clip: run tools/clip-parts.sh split')
+  assert.equal(crypto.createHash('sha256').update(clip()).digest('hex'), sum, 'the clip changed: run tools/clip-parts.sh split')
+})
+
 test('the app waits as long as the page plays, and her clip lasts until she leaves', () => {
   const swift = fs.readFileSync(path.join(__dirname, '..', 'Sources', 'main.swift'), 'utf8')
   const seconds = Number(/let durationSeconds = ([\d.]+)/.exec(swift)[1])
@@ -127,7 +145,7 @@ test('the app waits as long as the page plays, and her clip lasts until she leav
   assert.ok(Math.abs(inBy / 100 * intro.DURATION_MS - 200) < 1, 'the backdrop comes in by 0.2 s')
   assert.ok(Math.abs((1 - outFrom / 100) * intro.DURATION_MS - 500) < 1, 'the backdrop goes over the last 0.5 s')
   // The clip's length, from its movie header (mvhd, version 0 or 1).
-  const movie = fs.readFileSync(path.join(web, intro.CLIP))
+  const movie = clip()
   const at = movie.indexOf('mvhd')
   const v1 = movie[at + 4] === 1
   const timescale = movie.readUInt32BE(at + (v1 ? 24 : 16))
