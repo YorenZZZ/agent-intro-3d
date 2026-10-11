@@ -6,7 +6,15 @@ Claude Code 桌面版皮肤 —— 机械师 3D 版（非官方外部插件）�
 
 ![启动动画预览](docs/preview.webp)
 
-> 静态截图：[docs/preview-still.jpg](docs/preview-still.jpg)
+> 上面的动图为了控制体积做了降帧（8 帧/秒）、缩小（480 像素宽）和有损压缩，看起来会糊、会有色块；实际播放是 60 帧/秒、按窗口原尺寸渲染。真实画质以下面的截图为准。
+
+### 截图
+
+以下是 App 在 1152×1024 窗口上实际渲染的原尺寸画面（未缩放）：
+
+| 举起扳手 | 竖拇指 | 待机 |
+| --- | --- | --- |
+| ![举起扳手](docs/screenshots/screenshot-1.jpg) | ![竖拇指](docs/screenshots/screenshot-2.jpg) | ![待机](docs/screenshots/screenshot-3.jpg) |
 
 **[下载 2D 版本 →](https://github.com/YorenZZZ/claude-intro)**（立绘版，约 6.7 秒，体积更小）
 
