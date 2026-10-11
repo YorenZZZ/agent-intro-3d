@@ -39,7 +39,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 for arch in arm64 x86_64; do
   swiftc -O -target "$arch-apple-macosx14.0" \
     -framework AppKit -framework WebKit -framework ServiceManagement \
-    -o "$build/claude-intro-3d-$arch" "$root/Sources/main.swift"
+    -o "$build/claude-intro-3d-$arch" "$root"/Sources/*.swift
 done
 lipo -create -output "$app/Contents/MacOS/claude-intro-3d" "$build/claude-intro-3d-arm64" "$build/claude-intro-3d-x86_64"
 rm -f "$build/claude-intro-3d-arm64" "$build/claude-intro-3d-x86_64"
@@ -55,8 +55,12 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 rm -rf "$iconset" "$build/icon-1024.png"
-# Her clip is kept as parts (tools/clip-parts.sh); a fresh clone has only those.
-[[ -f "$root/Resources/web/layers/awakening.mov" ]] || "$root/tools/clip-parts.sh" join
+# Every video is kept as parts (tools/clip-parts.sh); a fresh clone has only
+# those, so rebuild whichever are missing.
+"$root/tools/clip-parts.sh" join
+# Copies web/pet/ too (index.html, pet.js, clips/). If the pet's clips.json
+# or *.mov haven't been built yet (tools/build-pet.sh), ditto just copies
+# whatever is there; PetController logs a reason and stays hidden at runtime.
 ditto "$root/Resources/web" "$app/Contents/Resources/web"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 

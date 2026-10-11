@@ -1,34 +1,72 @@
 #!/usr/bin/env bash
-# Her clip (Resources/web/layers/awakening.mov, about 15 MB) is kept in the
-# repository as ~700 KB parts under Resources/clip/, with its SHA-256, so a
-# push never carries one big file.
+# Every video the app ships (her intro clip, the jump out and the landing,
+# and the sidebar pet's clips) is kept in the repository as ~700 KB parts
+# under Resources/clip/, each with its SHA-256, so a push never carries one
+# big file. Parts are named after the video: Resources/clip/sit.mov.aa, ...
 #
-#   tools/clip-parts.sh split   after tools/build-clip.py: refresh the parts from the clip
-#   tools/clip-parts.sh join    rebuild the clip from the parts (build.sh does this when it is missing)
+#   tools/clip-parts.sh split [name ...]   refresh the parts of these videos
+#                                          (all when none given) from the files
+#   tools/clip-parts.sh join               rebuild every video that is missing
+#                                          from its parts (build.sh does this)
+#   tools/clip-parts.sh join --force       rebuild all of them
+#   tools/clip-parts.sh list               the videos, relative to Resources/web
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-clip="$root/Resources/web/layers/awakening.mov"
+web="$root/Resources/web"
 parts="$root/Resources/clip"
+# Relative to Resources/web; basenames must stay unique (parts share one folder).
+clips=(
+  layers/awakening.mov
+  layers/exit.mov
+  layers/landing.mov
+  pet/clips/idle.mov
+  pet/clips/sit.mov
+  pet/clips/feet.mov
+  pet/clips/snap.mov
+  pet/clips/click.mov
+)
+
+split_one() {
+  local rel="$1" base
+  base="$(basename "$rel")"
+  [[ -f "$web/$rel" ]] || { echo "missing $web/$rel" >&2; exit 1; }
+  rm -f "$parts/$base".?? "$parts/$base.sha256"
+  split -b 700k -a 2 "$web/$rel" "$parts/$base."
+  (cd "$web/$(dirname "$rel")" && shasum -a 256 "$base") > "$parts/$base.sha256"
+  echo "$base: $(ls "$parts/$base".?? | wc -l | tr -d ' ') parts"
+}
+
+join_one() {
+  local rel="$1" base
+  base="$(basename "$rel")"
+  cat "$parts/$base".?? > "$web/$rel.tmp"
+  mv "$web/$rel.tmp" "$web/$rel"
+  (cd "$web/$(dirname "$rel")" && shasum -a 256 -c "$parts/$base.sha256" >/dev/null) || {
+    echo "$rel does not match Resources/clip/$base.sha256" >&2
+    exit 1
+  }
+  echo "joined $rel"
+}
 
 case "${1:-}" in
   split)
-    rm -rf "$parts" && mkdir -p "$parts"
-    split -b 700k -a 2 "$clip" "$parts/awakening.mov."
-    (cd "$root/Resources/web/layers" && shasum -a 256 awakening.mov) > "$parts/awakening.mov.sha256"
-    echo "split into $(ls "$parts"/awakening.mov.?? | wc -l | tr -d ' ') parts"
+    shift
+    mkdir -p "$parts"
+    for rel in "${clips[@]}"; do
+      if [[ $# -eq 0 ]] || [[ " $* " == *" $(basename "$rel" .mov) "* ]]; then split_one "$rel"; fi
+    done
     ;;
   join)
-    cat "$parts"/awakening.mov.?? > "$clip.tmp"
-    mv "$clip.tmp" "$clip"
-    (cd "$root/Resources/web/layers" && shasum -a 256 -c "$parts/awakening.mov.sha256" >/dev/null) || {
-      echo "awakening.mov does not match Resources/clip/awakening.mov.sha256" >&2
-      exit 1
-    }
-    echo "joined $clip"
+    for rel in "${clips[@]}"; do
+      if [[ "${2:-}" == "--force" ]] || [[ ! -f "$web/$rel" ]]; then join_one "$rel"; fi
+    done
+    ;;
+  list)
+    printf '%s\n' "${clips[@]}"
     ;;
   *)
-    echo "usage: tools/clip-parts.sh split|join" >&2
+    echo "usage: tools/clip-parts.sh split [name ...] | join [--force] | list" >&2
     exit 2
     ;;
 esac

@@ -4,23 +4,39 @@
 // Runs as a background agent (no Dock icon) that opens at login. When a new
 // Claude process appears it covers the window Claude is about to open (the
 // frame Claude saved last time, then the real window once it exists) with a
-// borderless panel for about 12 seconds. A click or Esc skips it.
+// borderless panel for about 12 seconds. Only Esc skips it (a hint in the
+// corner says so); clicks and every other key do nothing.
 //
 //   claude-intro-3d                    background agent (the normal mode)
 //   claude-intro-3d --play             play once now over Claude's window, then quit
 //   claude-intro-3d --snapshot D [S]   render over a 1280x800 stand-in window, off screen
 //                                      and ignoring the mouse, a frame
 //                                      every S seconds (default 0.1) into folder D, named
-//                                      by their ms (README previews; tools/record.sh)
+//                                      by their ms (README previews; tools/record.sh);
+//                                      --landing takes the pet ending (she lands
+//                                      on the pet's spot in that stand-in window)
 //                   [--size WxH]       with a stand-in of that size instead
 //   claude-intro-3d --uninstall        stop opening at login, then quit
 //   claude-intro-3d --watch ID         agent that reacts to another app (for testing)
+//
+// Also hosts the desktop pet (Sources/pet.swift): once the intro for a
+// launch finishes (or there is none to play), a PetController shows her
+// standing in Claude's left sidebar until Claude quits.
+//   claude-intro-3d --pet on|off       enable/disable the pet, then start normally
+//   claude-intro-3d --pet-snapshot D [S]   render ONLY the pet page, off screen,
+//                                      a frame every S seconds (default 0.1) into D
+//                   [--size WxH]       stand-in Claude window size (default 1152x1024)
+//                   [--script a,b,c]   queue these clips in order via ClaudePet.play()
+//                   [--quota sample]   feed a fixed sample quota so the bubble renders
 import AppKit
 import ServiceManagement
 import WebKit
 
 let claudeBundleID = "com.anthropic.claudefordesktop"
-let durationSeconds = 12.1  // ClaudeIntro.DURATION_MS in Resources/web/intro.js
+// ClaudeIntro.DURATION_MS in Resources/web/intro.js: the longest the page can
+// play (the pet ending). Without a pet it posts 'done' after CORE_MS (12.1 s);
+// this is only the dead-man's-switch timeout and the --snapshot span.
+let durationSeconds = 20.0
 
 enum Log {
   static let url: URL = {
@@ -118,6 +134,16 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
   private let pid: pid_t?
   private let snapshotFolder: URL?
   static var snapshotEvery = 0.1
+  // --snapshot --landing: the stand-in window's pet rect, so a recording
+  // takes the pet ending (she leaps out and lands on the pet's spot).
+  static var snapshotPetFrame: (x: Double, y: Double, w: Double, h: Double)?
+  // The pet's clip-frame rect in the Claude window's own top-left
+  // coordinates, queried once the intro page is ready (nil if the pet's
+  // geometry isn't known yet, e.g. no PetController in --play/--snapshot).
+  private let petFrame: (() -> (x: Double, y: Double, w: Double, h: Double)?)?
+  // Called when the page posts "landed" (the pet should reveal instantly).
+  private let onLanded: (() -> Void)?
+  private(set) var landed = false
   private let onFinish: () -> Void
   private var panel: IntroPanel?
   private var webView: WKWebView?
@@ -130,9 +156,11 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
   private let began = Date()
 
   // pid: the app whose window to cover; nil covers a centered stand-in.
-  init(pid: pid_t?, snapshotFolder: URL? = nil, onFinish: @escaping () -> Void) {
+  init(pid: pid_t?, snapshotFolder: URL? = nil, petFrame: (() -> (x: Double, y: Double, w: Double, h: Double)?)? = nil, onLanded: (() -> Void)? = nil, onFinish: @escaping () -> Void) {
     self.pid = pid
     self.snapshotFolder = snapshotFolder
+    self.petFrame = petFrame
+    self.onLanded = onLanded
     self.onFinish = onFinish
   }
 
@@ -220,10 +248,13 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
     // A recording takes neither the keyboard nor Esc.
     if snapshotFolder == nil { panel.makeKey() }
     if keys == nil, snapshotFolder == nil {
+      // Every key is ours while she plays: Esc ends it, any other key is
+      // swallowed here (never skips, never reaches WebKit to beep).
       keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-        guard event.keyCode == 53 else { return event }  // Esc
-        Log.write("skipped with Esc")
-        self?.finish(fade: 0.2)
+        if event.keyCode == 53 {  // Esc
+          Log.write("skipped with Esc")
+          self?.finish(fade: 0.2)
+        }
         return nil
       }
     }
@@ -247,13 +278,19 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
       playIfReady()
     case "ready":
       Log.write("playing at \(elapsed())")
+      // Handed over before any seek, so a recording plays the same ending.
+      if let frame = snapshotFolder != nil ? IntroPlayer.snapshotPetFrame : petFrame?() {
+        webView?.evaluateJavaScript("typeof ClaudeIntro.setPet === 'function' && ClaudeIntro.setPet({x: \(frame.x), y: \(frame.y), w: \(frame.w), h: \(frame.h)})")
+      }
       if let folder = snapshotFolder { return captureFrames(into: folder) }
       DispatchQueue.main.asyncAfter(deadline: .now() + durationSeconds + 2) { [weak self] in self?.finish() }
+    case "landed":
+      Log.write("pet landed; revealing instantly")
+      landed = true
+      onLanded?()
+      finish(fade: 0)
     case "done":
       finish()
-    case "skip":
-      Log.write("skipped")
-      finish(fade: 0.2)
     case let note where note.hasPrefix("stats:") || note.hasPrefix("note:"):
       Log.write(note)
     default:
@@ -321,9 +358,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var knownProcesses = Set<pid_t>()
   private var observation: NSKeyValueObservation?
   private var player: IntroPlayer?
+  // nil for --play/--snapshot/--pet-snapshot/--uninstall; created once for
+  // every other mode (including --watch) right before watch() starts.
+  private var pet: PetController?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let arguments = CommandLine.arguments
+    // '--pet on'/'--pet off': just flip the stored preference and fall
+    // through to normal startup below -- if another instance of this agent
+    // is already running, it re-reads this default every tick and the
+    // otherAgentIsRunning() check further down still makes this short-lived
+    // invocation quit right after.
+    if let index = arguments.firstIndex(of: "--pet"), index + 1 < arguments.count {
+      switch arguments[index + 1] {
+      case "on":
+        UserDefaults.standard.set(true, forKey: "petEnabled")
+        UserDefaults.standard.removeObject(forKey: "petSnoozeUntil")
+        Log.write("pet enabled via --pet on")
+      case "off":
+        UserDefaults.standard.set(false, forKey: "petEnabled")
+        UserDefaults.standard.removeObject(forKey: "petSnoozeUntil")
+        Log.write("pet disabled via --pet off")
+      default:
+        Log.write("unknown --pet value: \(arguments[index + 1])")
+      }
+    }
+    if let index = arguments.firstIndex(of: "--pet-snapshot"), index + 1 < arguments.count {
+      let folder = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+      var every = 0.1
+      if index + 2 < arguments.count, let value = Double(arguments[index + 2]), value >= 0.01 {
+        every = value
+      }
+      var size = NSSize(width: 1152, height: 1024)
+      if let at = arguments.firstIndex(of: "--size"), at + 1 < arguments.count {
+        let parts = arguments[at + 1].split(separator: "x").compactMap { Double($0) }
+        if parts.count == 2, parts[0] >= 320, parts[1] >= 240 { size = NSSize(width: parts[0], height: parts[1]) }
+      }
+      var script: [String] = []
+      if let at = arguments.firstIndex(of: "--script"), at + 1 < arguments.count {
+        script = arguments[at + 1].split(separator: ",").map(String.init).filter { !$0.isEmpty }
+      }
+      var useQuotaSample = false
+      if let at = arguments.firstIndex(of: "--quota"), at + 1 < arguments.count, arguments[at + 1] == "sample" {
+        useQuotaSample = true
+      }
+      let snapshotPlayer = PetSnapshotPlayer(folder: folder, every: every, script: script, useQuotaSample: useQuotaSample, standInSize: size)
+      snapshotPlayer.start()
+      return
+    }
     if arguments.contains("--uninstall") {
       UserDefaults.standard.set(false, forKey: "openAtLogin")
       do {
@@ -348,6 +430,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           AppWindow.standInSize = NSSize(width: parts[0], height: parts[1])
         }
       }
+      if arguments.contains("--landing") {
+        IntroPlayer.snapshotPetFrame = standInPetFrame(windowSize: AppWindow.standInSize)
+        Log.write("snapshot: pet ending at \(String(describing: IntroPlayer.snapshotPetFrame))")
+      }
       return playIntro(pid: nil, snapshotFolder: folder) { NSApp.terminate(nil) }
     }
     if let index = arguments.firstIndex(of: "--watch"), index + 1 < arguments.count {
@@ -358,6 +444,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     } else {
       openAtLogin()
     }
+    pet = PetController()
     watch()
   }
 
@@ -394,6 +481,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func watch() {
     knownProcesses = watchedProcesses()
     Log.write("watching \(watchedBundleID); already running: \(knownProcesses.sorted())")
+    if let pid = knownProcesses.first {
+      // Already running with no intro to hand off from: show the pet
+      // directly, once the tracker finds the window.
+      pet?.setClaudePID(pid)
+      pet?.reveal(fade: 0.4)
+    }
     observation = NSWorkspace.shared.observe(\.runningApplications, options: [.new]) { [weak self] _, _ in
       DispatchQueue.main.async { self?.processesChanged() }
     }
@@ -403,6 +496,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let current = watchedProcesses()
     let started = current.subtracting(knownProcesses)
     knownProcesses = current
+    // Tell the pet about the current pid on every change, including back to
+    // nil when Claude quits, so its 10Hz tracker always stops in that case.
+    pet?.setClaudePID(current.first)
     guard let pid = started.first else { return }
     Log.write("\(watchedBundleID) started: \(pid)")
     guard player == nil else { return }
@@ -410,8 +506,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func playIntro(pid: pid_t?, snapshotFolder: URL? = nil, then done: @escaping () -> Void) {
-    let player = IntroPlayer(pid: pid, snapshotFolder: snapshotFolder) { [weak self] in
-      self?.player = nil
+    pet?.holdForIntro()
+    let player = IntroPlayer(
+      pid: pid, snapshotFolder: snapshotFolder,
+      petFrame: { [weak self] in self?.pet?.frameForIntro() },
+      onLanded: { [weak self] in self?.pet?.reveal(fade: 0) }
+    ) { [weak self] in
+      guard let self else { return }
+      if self.player?.landed != true { self.pet?.reveal(fade: 0.4) }
+      self.player = nil
       Log.write("finished")
       done()
     }

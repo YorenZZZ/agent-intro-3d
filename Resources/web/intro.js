@@ -2,9 +2,9 @@
 // while it starts. A side-scrolling-action-game style band, with the whole
 // 3D character, half-length, where the 2D cut-in had her: her head and wrench
 // rise above the band, and no edge or mask cuts any of her. Nothing is
-// drawn around her (no rim light or glow) but a faint, soft shadow under her,
-// baked into her clip (build-clip.py --shadow), so she reads as a model
-// standing in front of the band, not a cut-out pasted onto it.
+// drawn around her: no rim light, glow or baked shadow (build-clip.py
+// --shadow is left off, so no dark cast shows on her suit between her arm
+// and waist, and she matches the sidebar pet, which has none either).
 //
 // Nothing is baked from her outline either (no afterimage or flash
 // silhouette): a still outline cannot follow her clip, so it would show a
@@ -46,19 +46,84 @@
 //              turns away again, resolute, as she leaves (11.45–11.95); her
 //              hair swings and settles with each turn, her hanging hand stays
 //              by her side
+//
+// Without a pet rect (ClaudeIntro.setPet was never called, or either
+// transition clip could not be buffered), the intro ends exactly as above:
 //  11.40–11.90 holding that look, she fades toward the camera and the band
 //              snaps shut
 //  11.60–12.10 the backdrop fades and the app underneath shows through
+//  at CORE_MS  'done' is posted
+//
+// With one (setPet called before the band opens; see prepare()), her clip
+// plays through to its own last frame unchanged -- she never fades -- and at
+// CORE_MS (her clip's natural end, in the same window the fade used to run)
+// hands off to layers/exit.mov in the same CHAR_BOX, so there is no jump in
+// her position, scale, colour or the chest star's glow (both clips share one
+// colour correction and relighting clock; see tools/build-transition.sh):
+//  11.40       the band and backdrop hold still, just before their own
+//              closing keyframes (HOLD_AT_MS; looping gears and embers keep
+//              moving), so her huge half figure only ever shows over the
+//              dark scene, never cut off by the window over Claude's light UI
+//  12.00–14.40 exit: she glances down-left, crouches, leaps, and shoots out
+//              through the top of the window, over the still-open scene
+//  14.40–15.10 with her gone, the scene closes exactly as the plain ending's
+//              does (its own 11.40–12.10 keyframes, resumed: SCENE_CLOSE_MS),
+//              and Claude's own window shows through
+// Then layers/landing.mov appears at the rect's derived canvas
+// (landingLayout; parts outside the window are simply clipped) and plays
+// from an empty frame:
+//  15.10–19.77 landing: she drops in from the upper right, arcs down-left,
+//              lands, stands and turns -- ending on the same neutral pose
+//              Resources/web/pet/clips/poster.png shows, with a soft ground
+//              ellipse (petShadowLayout, matching the pet page's own
+//              #shadow) fading in as she touches down, so the pet panel
+//              Swift reveals the instant 'landed' posts shows no seam
+//  at 'landed' the pet is shown and the intro closes with no fade (Swift);
+//              'done' is never posted on this path
+//
+// Only Esc skips, in both paths (Swift's key monitor; the page shows a
+// corner hint saying so); clicks and other keys never interrupt.
 ;(function (root) {
   'use strict'
 
-  const DURATION_MS = 12100
-  // The band's own animations run SPAN seconds. Their keyframes are placed in
-  // seconds from the start (at) or before the end (end), so lengthening the
-  // intro only moves the exit.
-  const SPAN = DURATION_MS / 1000 - 0.1
+  // The band's own choreography above, and the plain ending without a pet,
+  // both run exactly CORE_MS as before; the window the fade used to run in
+  // is where the pet ending instead hands off to layers/exit.mov. DURATION_MS
+  // (checked against Sources/main.swift and index.html) covers the longer
+  // pet path: CORE_MS, then exit.mov's length, SCENE_CLOSE_MS and
+  // landing.mov's length, plus a little room; main.swift never animates
+  // against it; it only waits for 'done'/'landed' with this as a
+  // dead-man's-switch timeout.
+  const CORE_MS = 12100
+  const EXIT_CLIP = 'layers/exit.mov'
+  const LANDING_CLIP = 'layers/landing.mov'
+  const DURATION_MS = 20000
+  // The pet path's scene hold (see this file's header): from the first of
+  // the band's closing keyframes (end(.6) below) until she has left, then
+  // the rest of CORE_MS to close it, before she drops back in.
+  const HOLD_AT_MS = CORE_MS - 700
+  const SCENE_CLOSE_MS = CORE_MS - HOLD_AT_MS
+  // The band's own animations run SPAN seconds, tied to CORE_MS (not
+  // DURATION_MS): the pet ending only adds time after the band's own
+  // choreography, never stretches it. Their keyframes are placed in seconds
+  // from the start (at) or before the end of CORE_MS (end).
+  const SPAN = CORE_MS / 1000 - 0.1
   const at = seconds => `${+(seconds / SPAN * 100).toFixed(3)}%`
   const end = seconds => at(SPAN - seconds)
+  // The pet clip frame's alpha bbox, normalised (Resources/web/pet/clips/clips.json
+  // `box`, idle's own -- shared by every pet clip including landing.mov's
+  // last frame): used to place the ground-contact ellipse exactly where the
+  // pet page's own #shadow (pet.js layoutShadow) would.
+  const PET_BOX = [0.287109375, 0.18621700879765396, 0.703125, 0.9472140762463344]
+  // landing.mov's own canvas (1080x1920, 9:16): the pet clip frame sits in it
+  // at this normalised rect (build/source/pet/seedance-prompts.md's landing
+  // entry; x0 0 and y0+h 1 mean its left and bottom edges are the canvas's
+  // own, so landingLayout only has to solve for scale).
+  const LANDING_BOX = { x: 0, y: 0.7198, w: 0.3741, h: 0.2802 }
+  // How long into landing.mov she has visibly touched down (measured on the
+  // built clip: build/source/pet/seedance-prompts.md's ~1.3s on the original
+  // timing, carried through the leading-frame trim --align-to applies).
+  const LANDING_TOUCHDOWN_MS = 960
   // One is picked at random on every start; at most 16 characters each, so
   // the greeting fits its strip.
   const LINES = [
@@ -289,6 +354,13 @@
 
   const STYLE = `
 #band{position:relative;width:800px;height:300px}
+.escHint{position:fixed;right:22px;top:20px;z-index:9;width:156px;height:30px;pointer-events:none;opacity:0;animation:flick .45s linear .8s both}
+.escHint svg{position:absolute;inset:0;display:block}
+.escText{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;white-space:nowrap;font:600 12px/1 ${MONO};letter-spacing:1px;color:${ORANGE_HI};text-shadow:0 0 6px rgba(226,117,71,.6)}
+.escHint.off{animation:escOff .2s linear both}
+@keyframes escOff{from{opacity:1}to{opacity:0}}
+.escSlash{color:${ORANGE};letter-spacing:0;margin-right:7px}
+.escKey{margin:0 6px;padding:3px 5px 2px;border:1px solid ${ORANGE_HI};background:rgba(226,117,71,.16);font-weight:700;letter-spacing:1.5px}
 #band *{position:absolute;box-sizing:border-box}
 #band svg,#band img{position:static;display:block}
 .fill{inset:0}
@@ -317,6 +389,13 @@ i{display:block}
 .dbob{inset:0;animation:dbob 2.6s ease-in-out .8s infinite}
 .cexit{inset:0;transform-origin:50% 60%;animation:cexit ${SPAN}s linear both}
 .moving{inset:0;width:100%;height:100%}
+.landingStage{position:fixed;inset:0;pointer-events:none}
+.landingWrap{position:absolute;display:none}
+.landingWrap>div{position:absolute}
+#landingSlot{inset:0}
+.landingWrap video{width:100%;height:100%;object-fit:fill}
+.landingShadow{border-radius:50%;opacity:0;background:radial-gradient(closest-side,var(--ground-shadow,rgba(31,30,29,.2)) 45%,rgba(0,0,0,0) 100%)}
+@media (prefers-color-scheme:dark){:root{--ground-shadow:rgba(0,0,0,.38)}}
 .wideflash{left:${FIELD.x}px;top:${FIELD.y}px;width:${FIELD.w}px;height:${FIELD.h}px;background:#fff3e0;opacity:0;animation:wideflash ${SPAN}s linear both}
 .screen{inset:0;mix-blend-mode:screen}
 .glow{border-radius:50%;background:radial-gradient(closest-side,#fff6dc,rgba(255,179,71,.85) 30%,rgba(255,106,0,0))}
@@ -418,6 +497,14 @@ ${flightFrames()}
   const HUD = svg(800, 300,
     `<g fill="none" stroke="${ORANGE_HI}" stroke-width="1.6" stroke-opacity=".9">` +
     '<path d="M54 250v-8l4-4h10"/><path d="M54 258v6l4 4h10"/><path d="M472 238h10l4 4v8"/><path d="M486 258v6l-4 4h-10"/></g>')
+  // The corner hint (only Esc skips): the HUD's own chamfered frame, corner
+  // brackets and ticks, in its orange, over a dark plate so it reads on
+  // whatever Claude shows behind.
+  const ESC_HINT = `<div id="escHint" class="escHint"><svg width="156" height="30" viewBox="0 0 156 30" aria-hidden="true">` +
+    `<path d="M9 .75H155.25V21L147 29.25H.75V9Z" fill="rgba(20,11,7,.74)" stroke="${ORANGE_HI}" stroke-width="1.2" stroke-opacity=".85"/>` +
+    `<g fill="none" stroke="${ORANGE_HI}" stroke-width="2"><path d="M.75 15V9L9 .75h7"/><path d="M155.25 15v6L147 29.25h-7"/></g>` +
+    `<g stroke="${ORANGE}" stroke-width="1" opacity=".8"><path d="M24 29.25v-3"/><path d="M30 29.25v-2"/><path d="M36 29.25v-2"/><path d="M42 29.25v-2"/></g>` +
+    '</svg><span class="escText"><span class="escSlash">///</span>按<span class="escKey">ESC</span>跳过</span></div>'
   const HUD_LINE = svg(800, 300,
     `<g stroke="${ORANGE}" stroke-width="1.2" opacity=".7"><path d="M492 253H760"/>` +
     Array.from({ length: 14 }, (_, i) => `<path d="M${500 + i * 19} 253v${i % 4 === 0 ? 6 : 3}"/>`).join('') + '</g>')
@@ -473,17 +560,24 @@ ${LETTERS.map((letter, i) => `<div class="t${i % 2 ? ` buzz${i}` : ''}"><div cla
 ${img('drone')}
 <div class="screen"><i class="glow eye"></i></div>
 </div></div></div></div></div></div>
-<div class="her" style="${CHAR_BOX}"><div class="cexit"><div class="pin"><div class="drift"><div class="hold">
+<div class="her" style="${CHAR_BOX}"><div class="cexit" id="charExit"><div class="pin"><div class="drift"><div class="hold" id="charSlot">
 ${moving ? '<i class="moving"></i>' : img('body')}
 </div></div></div></div></div>
 <div class="fx">${EMBERS_FRONT}</div>
 <div class="her" style="${onHer}"><i class="shock"></i></div>
 <i class="flashline"></i>
-</div>`
+</div>
+<div id="landingStage" class="landingStage">
+<div id="landingWrap" class="landingWrap">
+<div id="landingSlot" class="fill"></div>
+<div id="landingShadow" class="landingShadow"></div>
+</div>
+</div>
+${ESC_HINT}`
   }
 
   // Messages to the native app: prepared, ready (the band is on screen),
-  // stats, done, skip.
+  // stats, done, landed.
   function post(message) {
     const handler = root.webkit && root.webkit.messageHandlers && root.webkit.messageHandlers.intro
     if (handler) handler.postMessage(message)
@@ -569,12 +663,42 @@ ${moving ? '<i class="moving"></i>' : img('body')}
     }
   }
 
+  // Where setPet's rect (the pet clip frame, window px) places landing.mov's
+  // own 1080x1920 canvas: LANDING_BOX's sub-rect lands exactly on rect (its
+  // left and bottom edges already line up, x0 0 and y0+h 1, so only height
+  // need solving for); parts of the canvas above or beside the window are
+  // simply off the page, same as the clip's own corners never showing.
+  function landingLayout(rect) {
+    const height = rect.h / LANDING_BOX.h
+    const width = height * 9 / 16
+    return { left: rect.x - LANDING_BOX.x * width, top: rect.y + rect.h - height, width, height }
+  }
+
+  // The ground-contact ellipse within setPet's rect, in the same place
+  // Resources/web/pet/pet.js's layoutShadow puts it within the pet clip
+  // frame (PET_BOX is that function's `box`): centred under her feet
+  // (PET_BOX's bottom edge), 125% of her bbox wide, 0.22 of that tall.
+  function petShadowLayout(rect) {
+    const [x0, y0, x1, y1] = PET_BOX
+    const width = (x1 - x0) * 1.25 * rect.w
+    const height = width * 0.22
+    return { left: rect.x + ((x0 + x1) / 2) * rect.w - width / 2, top: rect.y + y1 * rect.h - height / 2, width, height }
+  }
+
   let prepared = null
   let clip = null
+  let exitClip = null
+  let landingClip = null
   let frozen = false
+  let petRect = null
+  let petDoc = null
+  let ended = false
+  // The scene's animations paused at HOLD_AT_MS (pet path), until she leaves.
+  let held = null
+  let released = false
 
-  // Buffers her clip; resolves to the video, or null if it cannot play here.
-  function loadClip() {
+  // Buffers a clip; resolves to the video, or null if it cannot play here.
+  function loadClip(src) {
     return new Promise(resolve => {
       const video = root.document.createElement('video')
       const done = ok => {
@@ -582,30 +706,36 @@ ${moving ? '<i class="moving"></i>' : img('body')}
         resolve(ok ? video : null)
       }
       const timer = root.setTimeout(() => done(false), 3000)
-      video.className = 'moving'
       video.muted = true
       video.playsInline = true
       video.preload = 'auto'
       video.addEventListener('canplaythrough', () => done(true), { once: true })
       video.addEventListener('error', () => done(false), { once: true })
-      video.src = CLIP
+      video.src = src
       video.load()
     })
   }
 
-  // Decodes every layer and buffers the clip up front, so nothing arrives
-  // after the band opens.
+  // Decodes every layer and buffers her clip, the exit and the landing up
+  // front, so nothing arrives after the band opens: with a pet rect, the
+  // ending hands off from one clip to the next with no gap to cover.
   function prepare() {
     prepared = prepared || Promise.all([
-      loadClip(),
+      loadClip(CLIP),
+      loadClip(EXIT_CLIP),
+      loadClip(LANDING_CLIP),
       ...LAYERS.map(name => {
         const image = new root.Image()
         image.src = `layers/${name}.webp`
         return image.decode()
       }),
-    ]).then(([video]) => {
+    ]).then(([video, exit, landing]) => {
       clip = video
+      if (clip) clip.className = 'moving'
+      exitClip = exit
+      landingClip = landing
       post(video ? 'note: clip buffered' : 'note: clip unavailable; using the still')
+      post(exit && landing ? 'note: pet transition buffered' : 'note: pet transition unavailable; plain ending only')
       post('prepared')
     })
     return prepared
@@ -613,48 +743,210 @@ ${moving ? '<i class="moving"></i>' : img('body')}
 
   const reducedMotion = () => Boolean(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches)
 
+  // True once a usable rect and both transition clips are in hand: the only
+  // condition under which the ending hands off instead of fading her away.
+  const petReady = () => Boolean(petRect && exitClip && landingClip)
+
+  // Called by the native app once it knows the pet's geometry (see this
+  // file's header). Only stores the rect; the hand-off itself waits for her
+  // clip to reach its own last frame (see play()). If the clips were not
+  // buffered in time, or no rect ever arrives, nothing here runs and the
+  // plain ending plays exactly as it always has.
+  function setPet(rect) {
+    if (!rect || !(rect.w > 0) || !(rect.h > 0)) return
+    petRect = { x: +rect.x, y: +rect.y, w: +rect.w, h: +rect.h }
+    // Her .cexit fade is cancelled the moment the pet is confirmed (well
+    // before it would start, around CORE_MS - 0.6s): disabled, not removed,
+    // so her position/transform-origin are untouched, only the keyframes
+    // that would fade and scale her away stop running.
+    if (petDoc && petReady()) {
+      const charExit = petDoc.getElementById('charExit')
+      if (charExit) charExit.style.animation = 'none'
+    }
+  }
+
+  // Only the scene's own timed keyframes hold; looping ones (gears, embers)
+  // run on, so the held scene still looks alive.
+  const timed = animation => Boolean(animation.effect) && animation.effect.getComputedTiming().iterations !== Infinity
+
+  // The scene's time at ms after play() on the pet path, given when she has
+  // left (releaseAt, the exit clip's end): as normal up to HOLD_AT_MS, still
+  // while she leaps out, then on from there. seek() reads the scene through
+  // this, so a recording shows exactly what playback does.
+  const sceneMs = (ms, releaseAt) => ms < HOLD_AT_MS ? ms : ms < releaseAt ? HOLD_AT_MS : HOLD_AT_MS + ms - releaseAt
+
+  // At HOLD_AT_MS, with a pet confirmed: stops the band's and backdrop's
+  // timed keyframes right where their closing would begin. Only running
+  // ones: play() on a finished animation would restart it from 0.
+  function holdScene(document) {
+    if (held || frozen || !petReady()) return
+    held = document.getAnimations().filter(animation => timed(animation) && animation.playState === 'running')
+    for (const animation of held) {
+      animation.pause()
+      animation.currentTime = HOLD_AT_MS
+    }
+  }
+
+  // Once she is gone: the scene closes over SCENE_CLOSE_MS from where it held.
+  function releaseScene() {
+    if (!held || released || frozen) return
+    released = true
+    for (const animation of held) animation.play()
+  }
+
+  // Swaps her clip for the exit clip in the same CHAR_BOX slot, with no
+  // fade: build-transition.sh lines exit.mov up on awakening.mov's own last
+  // frame (position, scale, colour, the chest star), so
+  // the swap is invisible. Falls back to the plain ending (the CORE_MS
+  // timeout below posts 'done') if the pet was never confirmed ready.
+  // She leaps out right across the top-right corner: the Esc hint goes first
+  // (Esc itself keeps working until the very end).
+  function hideEscHint(document) {
+    const hint = document.getElementById('escHint')
+    if (!hint) return
+    if (frozen) hint.style.display = 'none'
+    else hint.classList.add('off')
+  }
+
+  function handOff(document) {
+    if (!petReady() || ended) return
+    ended = true
+    hideEscHint(document)
+    const slot = document.getElementById('charSlot')
+    if (slot) {
+      slot.innerHTML = ''
+      exitClip.className = 'moving'
+      slot.appendChild(exitClip)
+    }
+    exitClip.play().catch(error => post(`note: exit clip did not play: ${error && error.message}`))
+    exitClip.addEventListener('ended', () => {
+      if (frozen) return
+      // Gone once it ends, whatever its last frame holds, so no still of
+      // her can linger over the app while she drops in.
+      exitClip.style.visibility = 'hidden'
+      // She drops back in only once the held scene has closed; if it never
+      // held, it already closed at CORE_MS.
+      const wait = held && !released ? SCENE_CLOSE_MS : 0
+      releaseScene()
+      root.setTimeout(() => frozen || landingOn(document), wait)
+    }, { once: true })
+    // A stalled exit clip must not keep the dark scene over Claude for good.
+    root.setTimeout(releaseScene, (exitClip.duration || 0) * 1000 + 1000)
+  }
+
+  // Reveals landing.mov at the rect's own derived canvas and plays it
+  // through to her landed, neutral pose; posts 'landed' once it is there
+  // (never 'done' on this path -- see play()).
+  function landingOn(document) {
+    const { left, top, width, height } = landingLayout(petRect)
+    const wrap = document.getElementById('landingWrap')
+    const shadow = document.getElementById('landingShadow')
+    const slot = document.getElementById('landingSlot')
+    if (!wrap || !slot) return post('landed')
+    wrap.style.left = `${left}px`
+    wrap.style.top = `${top}px`
+    wrap.style.width = `${width}px`
+    wrap.style.height = `${height}px`
+    wrap.style.display = 'block'
+    if (shadow) {
+      const rect = petShadowLayout(petRect)
+      shadow.style.left = `${rect.left - left}px`
+      shadow.style.top = `${rect.top - top}px`
+      shadow.style.width = `${rect.width}px`
+      shadow.style.height = `${rect.height}px`
+      shadow.style.transition = 'none'
+      shadow.style.opacity = '0'
+      root.setTimeout(() => {
+        shadow.style.transition = 'opacity .3s linear'
+        shadow.style.opacity = '1'
+      }, LANDING_TOUCHDOWN_MS)
+    }
+    slot.innerHTML = ''
+    slot.appendChild(landingClip)
+    landingClip.play().catch(error => post(`note: landing clip did not play: ${error && error.message}`))
+    landingClip.addEventListener('ended', () => post('landed'), { once: true })
+  }
+
   async function play(document) {
     await prepare()
     const stage = document.getElementById('stage')
     stage.innerHTML = introMarkup(introText(new Date()), Boolean(clip))
+    petDoc = document
     if (clip) {
       stage.querySelector('.moving').replaceWith(clip)
       if (!reducedMotion()) {
         root.setTimeout(() => frozen || clip.play().catch(error => post(`note: clip did not play: ${error && error.message}`)), CLIP_AT_MS)
       }
+      // Her clip's own natural end (awakening.mov's last frame) is the one
+      // moment the pet ending hands off from; without a pet it is a no-op,
+      // and the CORE_MS timeout below posts 'done' once her .cexit fade
+      // (unmodified CSS) has already taken her to opacity 0.
+      clip.addEventListener('ended', () => frozen || handOff(document), { once: true })
+      // setPet arrives after 'ready' below, long before this; holdScene
+      // itself checks the pet is confirmed by then.
+      if (!reducedMotion()) root.setTimeout(() => holdScene(document), HOLD_AT_MS)
     }
+    if (petRect) setPet(petRect)  // setPet ran before play(): apply it now that the DOM exists
     fit(document)
     root.addEventListener('resize', () => fit(document))
     document.body.classList.add('playing')
-    document.addEventListener('mousedown', () => post('skip'), { once: true })
+    // No click handler: only Esc (Swift's key monitor) ends it early, as the
+    // corner hint (#escHint) says; a click on her does nothing.
     measureFrames(DURATION_MS - 200)
-    root.setTimeout(() => frozen || post('done'), DURATION_MS)
+    root.setTimeout(() => frozen || petReady() || ended || post('done'), CORE_MS)
     post('ready')
   }
 
   // For recordings: freezes every animation and her clip at ms after play(),
   // resolving once that moment is on screen, so frames can be taken however
-  // slowly the snapshots come.
+  // slowly the snapshots come. Past her clip's own end, with a pet ready, ms
+  // is read against the exit and then the landing clip in turn, mounting
+  // each the same way the real hand-off does, and the scene's timed
+  // keyframes through sceneMs, holding while she leaps out as playback does.
   async function seek(ms) {
     frozen = true
+    const coreEnd = clip ? CLIP_AT_MS + (clip.duration || 0) * 1000 : Infinity
+    const petPath = Boolean(clip) && petReady()
+    const exitEnd = petPath ? coreEnd + (exitClip.duration || 0) * 1000 : Infinity
+    const scene = petPath ? sceneMs(ms, exitEnd) : ms
     for (const animation of root.document.getAnimations()) {
       animation.pause()
-      animation.currentTime = ms
+      animation.currentTime = timed(animation) ? scene : ms
+    }
+    const seekVideo = async (video, at) => {
+      video.pause()
+      if (Math.abs(video.currentTime - at) > 0.0005) {
+        await new Promise(resolve => {
+          video.addEventListener('seeked', resolve, { once: true })
+          video.currentTime = at
+        })
+      }
     }
     if (clip) {
-      clip.pause()
-      const at = Math.max(0, Math.min(clip.duration || 0, (ms - CLIP_AT_MS) / 1000))
-      if (Math.abs(clip.currentTime - at) > 0.0005) {
-        await new Promise(resolve => {
-          clip.addEventListener('seeked', resolve, { once: true })
-          clip.currentTime = at
-        })
+      if (petPath && ms >= coreEnd) {
+        if (!ended) handOff(root.document)
+        // As in playback, the exit clip shows only until it ends: a recording
+        // steps past its last frames, so it must not keep the last one it seeked.
+        exitClip.style.visibility = ms < exitEnd ? '' : 'hidden'
+        const landingAt = exitEnd + SCENE_CLOSE_MS
+        if (ms < exitEnd) {
+          await seekVideo(exitClip, Math.max(0, Math.min(exitClip.duration || 0, (ms - coreEnd) / 1000)))
+        } else if (ms >= landingAt) {
+          if (root.document.getElementById('landingWrap').style.display !== 'block') landingOn(root.document)
+          await seekVideo(landingClip, Math.max(0, Math.min(landingClip.duration || 0, (ms - landingAt) / 1000)))
+        }
+      } else {
+        await seekVideo(clip, Math.max(0, Math.min(clip.duration || 0, (ms - CLIP_AT_MS) / 1000)))
       }
     }
     await new Promise(resolve => root.requestAnimationFrame(() => root.requestAnimationFrame(resolve)))
   }
 
-  const api = { DURATION_MS, LINES, NIGHT_LINES, CLIP, CLIP_AT_MS, PEAK, RIGHT, introText, introMarkup, layout, prepare, play, seek }
+  const api = {
+    DURATION_MS, CORE_MS, HOLD_AT_MS, SCENE_CLOSE_MS, LINES, NIGHT_LINES, CLIP, CLIP_AT_MS, EXIT_CLIP, LANDING_CLIP,
+    PET_BOX, LANDING_BOX, LANDING_TOUCHDOWN_MS, PEAK, RIGHT,
+    introText, introMarkup, layout, landingLayout, petShadowLayout, sceneMs, setPet, prepare, play, seek,
+  }
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.ClaudeIntro = api
 })(typeof window === 'undefined' ? globalThis : window)

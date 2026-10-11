@@ -1,4 +1,7 @@
 build/
 .DS_Store
 __pycache__/
-Resources/web/layers/awakening.mov
+# Every video lives in the repository as parts under Resources/clip/
+# (tools/clip-parts.sh); build.sh joins them back.
+Resources/web/layers/*.mov
+Resources/web/pet/clips/*.mov

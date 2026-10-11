@@ -18,9 +18,15 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
   background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .025) 0 1px, transparent 1px 3px);
 }
 #stage { position: fixed; inset: 0; display: grid; place-items: center; }
-/* As long as intro.js's DURATION_MS: in by 0.2s, out over the last 0.5s. */
-.playing #backdrop, .playing #scan { animation: backdrop 12.1s linear both; }
-@keyframes backdrop { 0% { opacity: 0 } 1.653% { opacity: 1 } 95.868% { opacity: 1 } 100% { opacity: 0 } }
+/* As long as intro.js's DURATION_MS: in by 0.2s, out over the last 0.5s
+   before CORE_MS (12.1s), the same moment the plain ending's fade used to
+   run and the pet ending instead hands off to the exit clip; held at
+   opacity 0 for the rest of DURATION_MS, which only a pet ending plays
+   into (tests/intro.test.cjs checks both percentages against CORE_MS).
+   A pet ending holds this animation, with the band's, while she leaps out
+   (intro.js holdScene), so the fade runs only once she is gone. */
+.playing #backdrop, .playing #scan { animation: backdrop 20s linear both; }
+@keyframes backdrop { 0% { opacity: 0 } 1% { opacity: 1 } 58% { opacity: 1 } 60.5% { opacity: 0 } 100% { opacity: 0 } }
 </style>
 </head>
 <body>

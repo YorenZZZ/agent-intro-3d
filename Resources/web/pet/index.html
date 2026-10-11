@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file: data:; media-src 'self' file:; style-src 'unsafe-inline'; script-src 'self' file:; connect-src 'self' file:">
+<!--
+  connect-src is the one addition over Resources/web/index.html's policy:
+  this page fetches clips/clips.json itself (the intro's layers are plain
+  <img>/<video src> tags, never fetch()), and fetch falls back to
+  default-src 'none' without it. <video>/<img> loads stay governed by
+  media-src/img-src as before, unaffected by this.
+-->
+<title>Claude Pet</title>
+<style>
+:root {
+  --ar: 3 / 4;
+  /* The bubble reads as a native Claude popover/card, not the intro's
+     orange HUD -- light card, hairline border, a very subtle shadow (the
+     ONE place on this whole page allowed a shadow: never on her, see
+     tests/pet.test.cjs). */
+  --bubble-bg: #ffffff;
+  --bubble-border: rgba(31, 30, 29, .12);
+  --bubble-shadow: 0 4px 16px rgba(31, 30, 29, .14), 0 1px 2px rgba(31, 30, 29, .08);
+  --bubble-text: #1f1e1d;
+  --bubble-text-dim: #73726c;
+  --bubble-accent: #d97757;
+  --bubble-track: rgba(31, 30, 29, .08);
+  --ground-shadow: rgba(31, 30, 29, .20);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bubble-bg: #2a2a28;
+    --bubble-border: rgba(255, 255, 255, .14);
+    --bubble-shadow: 0 4px 16px rgba(0, 0, 0, .40), 0 1px 2px rgba(0, 0, 0, .30);
+    --bubble-text: #f3f1ee;
+    --bubble-text-dim: #a7a39d;
+    --bubble-accent: #e2825f;
+    --bubble-track: rgba(255, 255, 255, .12);
+    --ground-shadow: rgba(0, 0, 0, .38);
+  }
+}
+html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; cursor: default; -webkit-user-select: none; user-select: none; }
+#stage { position: fixed; inset: 0; }
+/* The clip frame: bottom of the page, full width, height = width * H/W
+   (clips.json `size`), so the remaining space above it is BUBBLE_SPACE —
+   Swift sizes the panel so that space is exactly 120pt; this page does not
+   need to know that number, only to pin the frame to the bottom. */
+#frame { position: absolute; left: 0; right: 0; bottom: 0; aspect-ratio: var(--ar); }
+/* Only a soft ground-contact ellipse under her feet (placed from clips.json
+   `box` by pet.js), tuned low-opacity/neutral for the light sidebar
+   (#fbfbf9) so she reads as standing on its floor — no glow, rim light,
+   outline or drop shadow anywhere else; her motion comes only from the
+   clips themselves. */
+#shadow { position: absolute; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(closest-side, var(--ground-shadow) 45%, rgba(0, 0, 0, 0) 100%); }
+#poster, .clip-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+/* The incoming clip fades in above (BLEND in pet.js); the outgoing one,
+   holding the matching pose, hides only after — linear, so the blend has no
+   sudden middle. The poster sits underneath only until that first fade-in
+   has actually run its course (pet.js hides it from then on): see the
+   "double figure" bug note by beginPlayback()'s onFirstFrame. */
+.clip-video { opacity: 0; transition: opacity .2s linear .2s; }
+.clip-video[data-front] { opacity: 1; z-index: 1; transition-delay: 0s; }
+/* The speech bubble, in BUBBLE_SPACE above her head. Position (left/top) is
+   set inline by pet.js from layoutBubble(); only opacity/transform fade. */
+#bubble { position: absolute; max-width: 220px; opacity: 0; transform: translateY(6px);
+  transition: opacity .2s linear, transform .2s linear; pointer-events: auto; }
+#bubble.visible { opacity: 1; transform: none; }
+.qp { position: relative; background: var(--bubble-bg); border: 1px solid var(--bubble-border);
+  border-radius: 12px; padding: 10px 12px; box-shadow: var(--bubble-shadow);
+  font: 12px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', sans-serif;
+  color: var(--bubble-text); }
+.qp .hd { font: 600 11px/1.4 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  color: var(--bubble-text-dim); margin-bottom: 7px; display: flex; justify-content: space-between; gap: 10px; }
+.qp .hd .at { font-weight: 400; font-size: 10px; }
+.qp .row { margin: 8px 0; }
+.qp .row.plain { margin: 0; color: var(--bubble-text); }
+.qp .row + .row { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--bubble-border); }
+.qp .line1 { font-size: 12px; font-weight: 500; color: var(--bubble-text); }
+.qp .bar { margin-top: 5px; height: 4px; border-radius: 2px; background: var(--bubble-track); overflow: hidden; }
+.qp .bar > i { display: block; height: 100%; background: var(--bubble-accent); }
+.qp .meta { margin-top: 4px; font-size: 10.5px; color: var(--bubble-text-dim); }
+.qp .ft { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--bubble-border); font-size: 10px; color: var(--bubble-text-dim); }
+.qp .tail { position: absolute; bottom: -5px; width: 10px; height: 10px; transform: translateX(-50%) rotate(45deg);
+  background: var(--bubble-bg); border-right: 1px solid var(--bubble-border); border-bottom: 1px solid var(--bubble-border); }
+@media (prefers-reduced-motion: reduce) { .clip-video { display: none; } }
+</style>
+</head>
+<body>
+<div id="stage">
+<div id="bubble"></div>
+<div id="frame">
+<div id="shadow"></div>
+<img id="poster" alt="">
+<video id="videoA" class="clip-video" muted playsinline preload="auto"></video>
+<video id="videoB" class="clip-video" muted playsinline preload="auto"></video>
+</div>
+</div>
+<script src="pet.js"></script>
+</body>
+</html>

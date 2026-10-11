@@ -29,24 +29,106 @@ mode VideoToolbox tags the clip with), to its HEVC encoder with alpha.
 
 --core re-lights the star on her chest frame by frame (tracked from X,Y in
 the first frame): it starts as a dim ember and smoothly comes to life
-(core_level), without flicker.
+(core_level), without flicker. --core-start adds seconds to its clock, so a
+clip built standalone (--align-to) can pick up already lit, matching the clip
+it continues from instead of re-running the rise from an ember.
+
+--fit a0,b0,a1,b1,a2,b2 supplies colour_fit's per-channel (gain, offset)
+directly (as its own "colour fit" line prints them) instead of computing them
+from this clip's own frame 0: for a clip built standalone that must carry
+another clip's colour correction, whose frame 0 (what colour_fit would
+otherwise calibrate against) this run never decodes.
 
 Seedance often holds still for its last few frames; --trim A:B keeps source
 frames A..B (numbered from 1) and --seconds S retimes what is left. --then
 appends a second clip made from the first one's last frame (her idle after
-the action), with its own --then-trim, --then-drop and --then-seconds.
-Seedance redraws that frame a little larger or shifted, so the second clip is
-first laid onto the first one's last frame (align), or she would jump there.
+the action), with its own --then-trim, --then-drop, --then-cut and
+--then-seconds. Seedance redraws that frame a little larger or shifted, so
+the second clip is first laid onto the first one's last frame (align), or she
+would jump there.
+
+--cut A:B (and --then-cut) ripple-deletes source frames A..B (numbered from
+1, inclusive, same numbering as --trim): unlike --drop, which leaves every
+kept frame at its original time (right for one bad frame among many, such as
+a cross-fade, where the pacing either side should not shift), --cut closes
+the gap by moving every later frame's time back by the cut range's width, so
+a held pose can be cut out of the middle of a clip without slowing it down.
+Good for a true hold (consecutive frames barely differ); if she keeps
+drifting through the range (growing or turning a little every frame, never
+quite still), the frames either side of the cut can still differ enough that
+optical flow blends them as a brief double exposure, since interpolation
+always runs between the two now-adjacent kept frames regardless of how
+different they are. --squeeze A:B:R (and --then-squeeze) speeds up frames
+A..B by R times instead: every frame is kept, so every output frame still
+blends between two genuinely adjacent source frames, and the hold just plays
+back faster, which avoids that blend for a drifting hold.
+
+--snap A:B[,C:D,..] (and --then-snap) marks source frames too fast for
+optical flow to bridge at all: real motion that crosses much of the frame in
+one 24 fps step (a leap, a fall), where DIS flow between the two frames
+either side finds no real correspondence and the blend shows as a double
+exposure -- two poses overlaid, part of her see-through, with dark fragments
+where the blend pulled in --shadow's black -- rather than motion. Any output
+frame that would blend between two kept source frames, where either one's
+raw number falls in A..B (numbered from 1, inclusive, same numbering as
+--trim/--cut/--squeeze), instead just holds whichever of the two is nearer
+in time, unblended (animation on twos: each kept source frame covers 2-3
+output frames at 60 fps from 24), the same as a frame already falls back to
+right at the end of the clip (t < 1e-4, see the main loop). Her matte for
+these frames also skips matte_all's usual 3-frame smoothing (the same
+double-exposure problem one layer down, in alpha); each frame's own matte is
+still hole-filled and solidified on its own (solid()) exactly as usual, only
+the cross-frame averaging is skipped. Order of operations in load(): trim,
+then unrepeat (drops judder frames), then drop, then cut (both ripple-delete,
+changing which raw numbers survive into `keep`), then squeeze (retimes but
+never removes a frame), then snap -- resolved last so it only asks, of the
+raw numbers still present after drop/cut, which fall in A..B; squeeze's
+retiming does not change which pairs of kept frames are adjacent, so its
+order relative to snap does not matter. A number cut or dropped away is
+simply absent from `keep` and never matches a --snap range, same as it would
+no longer match a --squeeze range.
 
 --extend paints her below her waist (the clip's bottom edge): REST is the
 plate redrawn taller with her hips and thighs (her right hand hanging by her
 thigh), --extend-free the same picture without that forearm and hand; see
 extend(). The clip gets --extend-px plate px taller.
 
-usage: python tools/build-clip.py CLIP.mp4 PLATE.png [--trim A:B] [--drop N,..] [--seconds S]
-           [--then CLIP2.mp4 [--then-trim A:B] [--then-drop N,..] [--then-seconds S]]
-           [--extend REST.png --extend-free FREE.png [--extend-px PX]]
-           [--core X,Y [--core-min PX]] [--quality Q] [--preview OUT.mp4]
+--fps sets the output rate (default 60; every use of the old fixed constant
+follows it). --align-to PLATE.png lines the clip up on a plate with align()
+(the same registration --then uses to lay a second clip onto the first) before
+anything else runs, for a clip generated straight from the plate with no
+--then chain; the plate is resized to the clip's own frame size first (it may
+be a different resolution), and the estimated transform is logged like
+--then's.
+
+--meta OUT.json writes per-clip playback metadata for the desktop pet (frames,
+seconds, fps, size, box, from, to, safe, mask; see Resources/web/pet's
+contract): her alpha bbox in output frame 0 (box); where playback can start,
+skipping a leading hold on the neutral pose (from), and where it ends, handing
+over at a trailing hold instead of a frozen tail (to); frames close enough to
+frame 0 to hand over to another clip (safe, --safe-threshold; the per-frame
+distance from frame 0 is printed to stderr so the threshold can be tuned); and
+a coarse per-frame hit-test silhouette, unioned and dilated by one cell over
+short windows (mask). --poster OUT.png writes output frame 0 as a plain,
+straight-alpha PNG (un-premultiplied), her neutral pose shown before any clip
+loads.
+
+--islands A clears faint specks floating free of her in every output frame
+(see islands()): optical flow between two source frames can smear a stray dot
+of matte into a grey smudge beside her, which shows on a light window. A part
+apart from her whose alpha never reaches A (0-255) goes; a real part of her
+that comes loose is opaque and stays. --open-on IMAGE.png --open-rect X,Y,W,H
+starts the clip on that straight-alpha image laid at the rect (fractions of
+the output frame) and dissolves it into the clip over --open-seconds: a clip
+built backwards (tools/build-transition.sh's landing.mov) then ends on exactly
+that image, so whatever is shown in its place afterwards shows no seam.
+
+usage: python tools/build-clip.py CLIP.mp4 PLATE.png [--trim A:B] [--drop N,..] [--cut A:B] [--squeeze A:B:R] [--snap A:B,..] [--seconds S]
+           [--then CLIP2.mp4 [--then-trim A:B] [--then-drop N,..] [--then-cut A:B] [--then-squeeze A:B:R] [--then-snap A:B,..] [--then-seconds S]]
+           [--align-to PLATE.png] [--extend REST.png --extend-free FREE.png [--extend-px PX]]
+           [--core X,Y [--core-min PX] [--core-start S]] [--fit a0,b0,a1,b1,a2,b2] [--quality Q] [--fps N] [--width PX] [--preview OUT.mp4]
+           [--meta OUT.json [--safe-threshold D]] [--poster OUT.png]
+           [--islands A] [--open-on IMAGE.png --open-rect X,Y,W,H [--open-seconds S]]
 needs: macOS 14+, swiftc, ffmpeg with hevc_videotoolbox, numpy, opencv-python-headless, scipy
 --preview also writes the clip over the band's colours as plain H.264, for review.
 """
@@ -117,11 +199,26 @@ DEBLUE = (8.0, 40.0)  # blue over red and green where deblue starts, and where i
 HAIR_BLUE = (10.0, 20.0)
 HAIR_DARK = (58.0, 78.0)
 HAIR_SMOOTH = (10.0, 16.0)
+EDGE_SIGMA = 4.0  # --edge-fit: px (clip) over which her opaque colour is spread out into her soft edge
+EDGE_SURE = (30.0, 70.0)  # --edge-fit: her colour's distance from the backdrop where the fitted alpha starts to count, and where it counts fully
 # A frame is a repeat of the one before it when it moves less than this share
 # of its neighbours' steps, and both move more than REPEAT_MOVING (mean grey
 # level change at quarter size): see unrepeat().
 REPEAT_RATIO = 0.4
 REPEAT_MOVING = 0.8
+# --meta (pet clips): thresholds on the low-res (MASK_LOW_RES px wide),
+# premultiplied RGBA mean absolute difference, 0-255 scale. Calibrated against
+# a real 60 fps idle clip's printed curves (--meta prints both, so a
+# differently paced clip can be checked against these): frame-to-frame motion
+# sat at 0.01-0.03 while she was still and climbed to 0.08-0.19 once she
+# moved, and distance from frame 0 rose to a 5.2 peak at her furthest pose.
+FREEZE_MOTION = 0.1  # between consecutive frames: below this, nothing visibly moved (a leading or trailing hold)
+FREEZE_SECONDS = 0.25  # a trailing hold at least this long hands playback back to the plate pose instead of riding out a frozen tail (`to`)
+SAFE_THRESHOLD = 4.0  # default `safe` cutoff: frames close enough to frame 0 to hand over to another clip; calibrate from the printed curve
+MASK_LOW_RES = 48  # px wide, for --meta's low-res frame comparisons (safe, the leading/trailing freeze)
+HEAD_SAFE = 3.0  # --meta: her head's mean abs diff from frame 0 (full output res, 0-255) below which her face sits where frame 0's does
+HANDOFF_SECONDS = 0.4  # --meta: the pet page's cross-fade (index.html: .2s fade plus .2s delay); a hand-over frame must stay neutral this long
+MASK_COLS, MASK_ROWS = 24, 32  # --meta's hit-test grid (contract: clips.json mask.cols/rows)
 
 
 def decode(path):
@@ -229,7 +326,7 @@ def background(frame, matte):
     return cv2.resize(bg, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
-def hair_gaps(frame, matte, zone):
+def hair_gaps(frame, matte, zone, dark=HAIR_DARK, strands=0, blue=HAIR_BLUE):
     """How much of each pixel is backdrop showing between her hair strands,
     0-1. Vision takes her hair as one solid mass, so the dark blue backdrop
     between loose strands and between her hair and the wrench stayed in her,
@@ -244,14 +341,21 @@ def hair_gaps(frame, matte, zone):
     inside = np.zeros(matte.shape, np.float32)
     inside[y0:y1, x0:x1] = 1
     inside = cv2.GaussianBlur(inside, (0, 0), 15)
-    k = ramp(c[..., 2] - c[..., :2].max(axis=2), *HAIR_BLUE) * (1 - ramp(luma, *HAIR_DARK)) * inside
+    k = ramp(c[..., 2] - c[..., :2].max(axis=2), *blue) * (1 - ramp(luma, *dark)) * inside
     patches = ((k > 0.3) & (matte > 128)).astype(np.uint8)
     count, labels = cv2.connectedComponents(patches)
     if count > 1:
         grad = np.hypot(cv2.Sobel(luma, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(luma, cv2.CV_32F, 0, 1, ksize=3))
         core = cv2.erode(patches, np.ones((3, 3), np.uint8)) > 0
         smooth = np.ones(count, np.float32)
+        sizes = np.bincount(labels.ravel(), minlength=count)
         for j in range(1, count):
+            # A gap between strands is thin and edged with strands, so it
+            # never reads as smooth; strands (px) lets every patch smaller
+            # than that go by its colour alone. A glove or the wrench's dark
+            # metal is one bigger patch, still judged by its highlights.
+            if sizes[j] < strands:
+                continue
             g = grad[(labels == j) & core]
             smooth[j] = 1 - ramp(float(np.median(g)), *HAIR_SMOOTH) if g.size > 5 else 1.0
         smooth[0] = 1.0
@@ -259,7 +363,43 @@ def hair_gaps(frame, matte, zone):
     return cv2.GaussianBlur(k, (0, 0), 0.7)
 
 
-def premultiplied(frame, matte, hair_zone=None):
+def head_zone(matte, share=0.3):
+    """--hair-zone auto: this frame's own head zone (X0, Y0, X1, Y1), the top
+    share of her matte's bbox, for a clip whose head moves too far for one
+    fixed zone (the pet sits down). Her hair, the wrench's head and the
+    backdrop between them sit there; her belt and gloves, black leather that
+    the blue backdrop lights nearly its own colour, sit below it."""
+    ys, xs = np.nonzero(matte > 128)
+    if len(xs) == 0:
+        return None
+    y0, y1 = ys.min(), ys.max()
+    return int(xs.min()), int(y0), int(xs.max()) + 1, int(y0 + share * (y1 - y0))
+
+
+def edge_alpha(c, bg, a):
+    """--edge-fit: her soft edge's alpha taken from its colour. Vision's ramp
+    runs wider than she covers, most at her white hair and suit: an edge pixel
+    that is 40% her and 60% backdrop can carry 80% alpha, so 40% of dark blue
+    stays in it, unseen on the dark band but a grey, frayed fringe on a light
+    window. The backdrop behind each pixel is known (bg) and her own colour
+    there is her nearest opaque colour spread outward (fg), so the share of
+    her in it is where the pixel sits between the two. Only lowered, never
+    raised, and only where fg is far enough from the backdrop to tell (her
+    black gloves are nearly its colour: Vision's ramp stays there)."""
+    ramp = lambda v, lo, hi: (lambda k: k * k * (3 - 2 * k))(np.clip((v - lo) / (hi - lo), 0, 1))
+    core = (a >= 0.995).astype(np.float32)
+    num = cv2.GaussianBlur(c * core[..., None], (0, 0), EDGE_SIGMA)
+    den = cv2.GaussianBlur(core, (0, 0), EDGE_SIGMA)
+    fg = num / np.maximum(den, 1e-3)[..., None]
+    span = fg - bg
+    reach = (span ** 2).sum(axis=2)
+    share = np.clip(((c - bg) * span).sum(axis=2) / np.maximum(reach, 1e-3), 0, 1)
+    sure = ramp(np.sqrt(reach), *EDGE_SURE) * ramp(den, 0.02, 0.1)
+    edge = (a > 0) & (a < 0.995)
+    return np.where(edge, np.minimum(a, sure * share + (1 - sure) * a), a)
+
+
+def premultiplied(frame, matte, hair_zone=None, hair_dark=HAIR_DARK, edge_fit=False, hair_strands=0, hair_blue=HAIR_BLUE):
     """Her colour times her alpha, with the plate taken out of soft edges.
     Vision's soft ramp reaches a little past her into plain plate; where an
     edge pixel is barely different from the plate behind it, its alpha is
@@ -274,8 +414,12 @@ def premultiplied(frame, matte, hair_zone=None):
     key = np.clip((d - KEY_NEAR) / (KEY_FAR - KEY_NEAR), 0, 1)
     key = key * key * (3 - 2 * key)
     a = np.where(a < 0.995, np.minimum(a, key), a)
+    if edge_fit:
+        a = edge_alpha(c, bg, a)
+    if hair_zone == 'auto':
+        hair_zone = head_zone(matte)
     if hair_zone:
-        a = np.minimum(a, 1 - hair_gaps(frame, matte, hair_zone))
+        a = np.minimum(a, 1 - hair_gaps(frame, matte, hair_zone, hair_dark, hair_strands, hair_blue))
     a = a[..., None]
     return np.clip(c - (1 - a) * bg, 0, 255 * a), a[..., 0]
 
@@ -398,7 +542,10 @@ def align(clip, onto):
     redraws that frame a little larger or shifted (the idle after her action
     came out 0.7 % larger and 4-6 px lower), and she would jump where the two
     meet. The similarity (turn, uniform scale, shift) that SIFT matches find
-    between the clip's first frame and onto is applied to all its frames."""
+    between the clip's first frame and onto is applied to all its frames.
+    Returns (clip, ok); ok is false (clip unchanged) when too few matches were
+    found to trust a transform (--align-to's --meta takes this as its sign
+    that frame 0 truly is the pose it was aligned onto)."""
     sift = cv2.SIFT_create(8000)
     grey = lambda f: cv2.cvtColor(f, cv2.COLOR_RGB2GRAY)
     k1, d1 = sift.detectAndCompute(grey(clip[0]), None)
@@ -409,13 +556,14 @@ def align(clip, onto):
     M, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=2)
     if M is None or inliers.sum() < 60:
         print('the second clip could not be laid onto the first; left as it is', file=sys.stderr)
-        return clip
+        return clip, False
     moved = np.linalg.norm(src @ M[:, :2].T + M[:, 2] - src, axis=1)[inliers.ravel() == 1]
     print(f'second clip laid onto the first: scale {np.hypot(M[0, 0], M[1, 0]):.4f}, '
           f'turn {np.degrees(np.arctan2(M[1, 0], M[0, 0])):+.2f} deg, her points moved {np.median(moved):.1f} px '
           f'(median of {int(inliers.sum())} matches)', file=sys.stderr)
     h, w = clip.shape[1:3]
-    return np.stack([cv2.warpAffine(f, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE) for f in clip])
+    warped = np.stack([cv2.warpAffine(f, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE) for f in clip])
+    return warped, True
 
 
 def smooth_steps(values, ok, radius=2):
@@ -833,36 +981,149 @@ def output(pre, a, size, shadow=None):
     return np.dstack([rgb, a])
 
 
+def islands(rgba, faint, reach=5):
+    """--islands: clears, in place, the parts of output frame rgba
+    (premultiplied, 0-255) that float apart from her and stay faint. Alpha
+    above 0.1 is split into connected parts after growing it by reach px, so
+    hair strands and wrench tips that touch her only through a soft edge
+    still count as her; every part but the largest whose alpha never reaches
+    faint is cleared, its soft rim within reach with it."""
+    a = rgba[..., 3]
+    solid = a > 25
+    if not solid.any():
+        return rgba
+    grow = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * reach + 1, 2 * reach + 1))
+    count, parts = cv2.connectedComponents(cv2.dilate(solid.astype(np.uint8), grow), connectivity=8)
+    if count <= 2:
+        return rgba
+    sizes = np.bincount(parts[solid], minlength=count)
+    sizes[0] = 0
+    peak = np.zeros(count, np.uint8)
+    np.maximum.at(peak, parts[solid], a[solid])
+    drop = peak < faint
+    drop[0] = False
+    drop[sizes.argmax()] = False
+    if drop.any():
+        rgba[drop[parts]] = 0
+    return rgba
+
+
+def opening(image, rect, size):
+    """--open-on: the straight-alpha RGBA image, premultiplied (as output()'s
+    frames are) and resized into rect (x, y, w, h as fractions of size) of an
+    otherwise empty output frame; float, 0-255."""
+    width, height = size
+    x, y, w, h = rect
+    box = (int(round(w * width)), int(round(h * height)))
+    pre = image.astype(np.float32)
+    pre[..., :3] *= pre[..., 3:4] / 255
+    pre = cv2.resize(pre, box, interpolation=cv2.INTER_AREA)
+    frame = np.zeros((height, width, 4), np.float32)
+    x0, y0 = int(round(x * width)), int(round(y * height))
+    fx0, fy0 = max(0, x0), max(0, y0)
+    fx1, fy1 = min(width, x0 + box[0]), min(height, y0 + box[1])
+    frame[fy0:fy1, fx0:fx1] = pre[fy0 - y0:fy1 - y0, fx0 - x0:fx1 - x0]
+    return frame
+
+
+def head_region(alpha):
+    """--meta: rows/cols (y0, y1, x0, x1) of her head in frame 0: the top
+    third of her alpha bbox, padded a little, where a face that moved shows."""
+    ys, xs = np.nonzero(alpha > 128)
+    if len(xs) == 0:
+        return 0, alpha.shape[0], 0, alpha.shape[1]
+    y0, y1 = ys.min(), ys.min() + (ys.max() - ys.min()) // 3
+    pad = max(4, (xs.max() - xs.min()) // 20)
+    return max(0, y0 - pad), min(alpha.shape[0], y1 + pad), max(0, xs.min() - pad), min(alpha.shape[1], xs.max() + 1 + pad)
+
+
+def head_gray(rgba):
+    """Premultiplied RGBA laid over mid grey and made grey (float): colour and
+    silhouette both count, so a face, hair or wrench that moved shows."""
+    rgb = rgba[..., :3].astype(np.float32) + 128 * (1 - rgba[..., 3:4].astype(np.float32) / 255)
+    return rgb @ np.array([0.299, 0.587, 0.114], np.float32)
+
+
+def alpha_box(alpha, threshold=25.5):
+    """Her alpha bbox (--meta's box): [x0, y0, x1, y1], 0-1 of the frame, x1/y1
+    exclusive. alpha is 0-255; threshold is 0.1 of that, matching the mask's
+    own alpha>0.1 cutoff. The whole frame if nothing is above it (should not
+    happen on a real clip)."""
+    h, w = alpha.shape
+    ys, xs = np.nonzero(alpha > threshold)
+    if len(xs) == 0:
+        return [0.0, 0.0, 1.0, 1.0]
+    return [float(xs.min()) / w, float(ys.min()) / h, float(xs.max() + 1) / w, float(ys.max() + 1) / h]
+
+
+def encode_mask(grid):
+    """grid (rows, cols bool, row 0 top) as the contract's hex string: bits
+    row-major, each hex digit four consecutive cells, most significant bit
+    first. Zero-padded if the cell count is not a multiple of four (it is,
+    for MASK_COLS x MASK_ROWS, but this does not assume it)."""
+    bits = grid.astype(np.uint8).ravel()
+    pad = (-len(bits)) % 4
+    if pad:
+        bits = np.concatenate([bits, np.zeros(pad, np.uint8)])
+    nibbles = bits.reshape(-1, 4)
+    values = nibbles[:, 0] * 8 + nibbles[:, 1] * 4 + nibbles[:, 2] * 2 + nibbles[:, 3]
+    return ''.join(f'{v:x}' for v in values)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('clip')
     parser.add_argument('plate')
     parser.add_argument('--trim')
     parser.add_argument('--drop', help='N,..: source frames (numbered from 1) left out without retiming, such as a cross-fade')
+    parser.add_argument('--cut', help='A:B: source frames (numbered from 1, inclusive) ripple-deleted; later frames shift back to close the gap (a held pose, unlike --drop\'s single bad frame)')
+    parser.add_argument('--squeeze', help='A:B:R: source frames (numbered from 1, inclusive) sped up R times instead of removed, so a slow hold can be sped through without an optical-flow jump between two now-distant frames')
+    parser.add_argument('--snap', help='A:B[,C:D,..]: source frames (numbered from 1, inclusive, same numbering as --trim/--cut/--squeeze) too fast for DIS flow to blend without a double-exposure ghost; output frames land on the nearest kept source frame instead (animation on twos, no flow warp), and these frames\' matte is not smoothed across neighbours (still hole-filled/cleaned per frame as usual)')
     parser.add_argument('--seconds', type=float)
     parser.add_argument('--preview')
     parser.add_argument('--quality', type=int, default=60, help='VideoToolbox -q:v, 1-100')
+    parser.add_argument('--fps', type=int, default=OUT_FPS, help=f'output frames per second (default {OUT_FPS})')
     parser.add_argument('--out', default=str(OUT), help='where the clip is written (default Resources/web/layers/awakening.mov)')
     parser.add_argument('--width', type=int, default=OUT_W, help='output px across; keep her pixel density when the plate is wider than 1728 px (1258 for a 2058 px 3:4 whole-body plate)')
+    parser.add_argument('--align-to', help='PLATE.png: registers the clip onto this plate (align(), as --then does onto the first clip) before matting; resized to the clip\'s own frame size first')
     parser.add_argument('--core', help='X,Y: the chest star in the first frame (plate px); re-light it along core_level')
     parser.add_argument('--core-min', type=int, default=4000, help='smallest warm patch (px) taken for the emblem')
     parser.add_argument('--core-max', type=int, help='largest warm patch (px) taken for the emblem (keeps her orange armour out)')
     parser.add_argument('--core-reach', type=int, help='px around its last place searched for the emblem (default 280 across, 260 down)')
-    parser.add_argument('--hair-zone', help='X0,Y0,X1,Y1: clip px her head moves in; the backdrop between her hair strands there is taken out (hair_gaps)')
+    parser.add_argument('--core-start', type=float, default=0.0, help='seconds added to every frame\'s time before core_level (default 0): lets a clip built standalone (--align-to, no --then chain) start already past the ember-to-lit rise, matching a clip it continues from instead of restarting it')
+    parser.add_argument('--fit', help='a0,b0,a1,b1,a2,b2: skip colour_fit and use these per-channel (gain, offset) pairs instead, as printed by a previous run\'s "colour fit" line; for a clip built standalone that must carry the same colour correction as the clip it continues from (whose own frame 0 this clip never sees)')
+    parser.add_argument('--hair-zone', help='X0,Y0,X1,Y1: clip px her head moves in, or auto (each frame: the top of her matte, see head_zone); the backdrop between her hair strands there is taken out (hair_gaps)')
+    parser.add_argument('--edge-fit', action='store_true', help='take her soft edge\'s alpha from its colour between the backdrop and her own (see edge_alpha); for a clip shown on a light window')
+    parser.add_argument('--hair-strands', type=int, default=0, help='PX (clip): dark blue patches in --hair-zone smaller than this are backdrop by colour alone, skipping the smoothness test (the gaps between her hair strands)')
+    parser.add_argument('--hair-blue', help=f'LO,HI: blue over red and green where a dark pixel in --hair-zone starts to count as backdrop, and where it counts fully (default {HAIR_BLUE[0]:g},{HAIR_BLUE[1]:g}); lower it so strands mixed with the backdrop (greyer than it) go too')
+    parser.add_argument('--hair-dark', help=f'LO,HI: luma (0-255) below which a dark blue pixel in --hair-zone is all backdrop, and above which none of it is (default {HAIR_DARK[0]:g},{HAIR_DARK[1]:g}); lower it where the shaded side of her white suit is that blue')
     parser.add_argument('--shadow', help='DX,DY,BLUR,OPACITY: a soft shadow of her under her (clip px; see output)')
     parser.add_argument('--then', help='a second clip made from the first one\'s last frame, played after it')
     parser.add_argument('--then-trim')
     parser.add_argument('--then-drop')
+    parser.add_argument('--then-cut')
+    parser.add_argument('--then-squeeze')
+    parser.add_argument('--then-snap')
     parser.add_argument('--then-seconds', type=float)
     parser.add_argument('--extend', help='REST.png: the plate redrawn taller, her hips and thighs below her waist, right hand hanging')
     parser.add_argument('--extend-free', help='FREE.png: the same picture without that forearm and hand')
     parser.add_argument('--extend-px', type=int, default=256, help='plate px of her painted below her waist')
+    parser.add_argument('--meta', help='OUT.json: per-clip playback metadata for the desktop pet (frames, seconds, fps, size, box, from, to, safe, mask); see Resources/web/pet\'s clips.json contract')
+    parser.add_argument('--safe-threshold', type=float, default=SAFE_THRESHOLD, help=f'--meta: low-res premultiplied RGBA mean abs diff from frame 0 below which a frame is "safe" to hand over to another clip (default {SAFE_THRESHOLD}; tune from the printed curve)')
+    parser.add_argument('--islands', type=int, help='A (0-255): clear parts floating apart from her whose alpha never reaches A (see islands())')
+    parser.add_argument('--open-on', help='IMAGE.png: straight-alpha image output frame 0 shows exactly, dissolving into the clip over --open-seconds')
+    parser.add_argument('--open-rect', help='X,Y,W,H: where --open-on is laid, fractions of the output frame')
+    parser.add_argument('--open-seconds', type=float, default=0.5, help='--open-on: seconds the image takes to dissolve into the clip (default 0.5)')
+    parser.add_argument('--poster', help='OUT.png: output frame 0, straight alpha (un-premultiplied); her neutral pose, shown before any clip loads')
     args = parser.parse_args()
     if bool(args.extend) != bool(args.extend_free):
         parser.error('--extend and --extend-free go together')
+    if bool(args.open_on) != bool(args.open_rect):
+        parser.error('--open-on and --open-rect go together')
 
-    def load(path, trim, drop, seconds):
-        """The clip's frames and their times (seconds from its first)."""
+    def load(path, trim, drop, cut, squeeze, snap, seconds):
+        """The clip's frames, their times (seconds from its first), and which
+        of them --snap flags (bool array, aligned with the returned frames)."""
         clip, fps = decode(path)
         first = 1
         if trim:
@@ -879,22 +1140,66 @@ def main():
             kept = [k not in gone for k in keep]
             print(f'  frames {drop} left out', file=sys.stderr)
             keep, slots = [k for k, y in zip(keep, kept) if y], slots[kept]
+        if cut:
+            # Ripple-deleted: unlike drop, every frame after the range has its
+            # slot pulled back by the range's width, so the gap it leaves in
+            # the timeline closes instead of being flowed over.
+            lo, hi = (int(v) - first for v in cut.split(':'))
+            inside = [lo <= k <= hi for k in keep]
+            width = hi - lo + 1
+            keep = [k for k, y in zip(keep, inside) if not y]
+            slots = np.array([s - width if s > hi else s for s, y in zip(slots, inside) if not y])
+            print(f'  frames {cut} cut: {sum(inside)} frame(s), timeline shortened {width / fps:.3f}s', file=sys.stderr)
+        if squeeze:
+            # Sped up in place rather than removed: every output frame still
+            # blends between two genuinely adjacent source frames (the flow a
+            # cut would otherwise bridge across a far larger, visibly
+            # different gap), so a long hold where she keeps drifting (never
+            # truly still) can be sped through smoothly instead of jump-cut.
+            lo, hi, factor = squeeze.split(':')
+            lo, hi, factor = int(lo) - first, int(hi) - first, float(factor)
+            deltas = np.diff(slots, prepend=slots[0])
+            for idx in range(1, len(keep)):
+                if lo <= keep[idx] <= hi:
+                    deltas[idx] /= factor
+            slots = slots[0] + np.cumsum(deltas)
+            print(f'  frames {squeeze} sped up {factor:g}x', file=sys.stderr)
+        if snap:
+            # Resolved last: only asks, of the raw numbers still present after
+            # drop/cut, which fall in a --snap range; squeeze only retimes, it
+            # never changes which raw numbers are in `keep`, so doing this
+            # before or after squeeze makes no difference.
+            ranges = [tuple(int(v) - first for v in part.split(':')) for part in snap.split(',')]
+            snapped = np.array([any(lo <= k <= hi for lo, hi in ranges) for k in keep], bool)
+            print(f'  frames {snap} snapped to the nearest source frame (no flow blend, no matte smoothing)', file=sys.stderr)
+        else:
+            snapped = np.zeros(len(keep), bool)
         times = slots / fps
-        return clip[keep] if len(keep) < len(clip) else clip, times * (seconds / times[-1] if seconds else 1)
+        return (clip[keep] if len(keep) < len(clip) else clip), times * (seconds / times[-1] if seconds else 1), snapped
 
-    frames, times = load(args.clip, args.trim, args.drop, args.seconds)
+    frames, times, snap = load(args.clip, args.trim, args.drop, args.cut, args.squeeze, args.snap, args.seconds)
     seconds = times[-1]
     if args.then:
         # Its first frame is the first clip's last one, so it is dropped.
-        more, more_times = load(args.then, args.then_trim, args.then_drop, args.then_seconds)
-        more = align(more, frames[-1])
+        more, more_times, more_snap = load(args.then, args.then_trim, args.then_drop, args.then_cut, args.then_squeeze, args.then_snap, args.then_seconds)
+        more, _ = align(more, frames[-1])
         times = np.concatenate([times, seconds + more_times[1:]])
         frames = np.concatenate([frames, more[1:]])
+        snap = np.concatenate([snap, more_snap[1:]])
         seconds += more_times[-1]
     n = len(frames)
     h, w = frames.shape[1:3]
 
-    def matte_all(clip):
+    aligned_to_plate = False
+    if args.align_to:
+        # The plate may not be at the clip's own resolution (resize first);
+        # align() then applies the one transform it finds on frame 0 to every
+        # frame, exactly as it lays a --then clip onto the one before it.
+        ref = cv2.cvtColor(cv2.imread(args.align_to), cv2.COLOR_BGR2RGB)
+        ref = cv2.resize(ref, (w, h), interpolation=cv2.INTER_AREA)
+        frames, aligned_to_plate = align(frames, ref)
+
+    def matte_all(clip, snap=None):
         work = Path(tempfile.mkdtemp())
         try:
             masks = mattes(clip, work)
@@ -909,6 +1214,13 @@ def main():
         # in it: a fast hand left a faint, speckled trail.
         near = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
         for i, m in enumerate(masks):
+            if snap is not None and snap[i]:
+                # --snap: motion here is too fast even for this 3-frame blend
+                # to ride along with -- it would cross-fade her matte between
+                # two distant poses, the same double exposure as the colour
+                # blend it stands in for. Her own matte alone, no neighbours.
+                out[i] = m
+                continue
             smooth = np.minimum(masks[max(i - 1, 0)] * 0.25 + m * 0.5 + masks[min(i + 1, last)] * 0.25, cv2.dilate(m, near))
             inside = cv2.erode((m >= 250).astype(np.uint8), np.ones((5, 5), np.uint8)) * 255
             out[i] = np.clip(np.maximum(smooth, inside) + 0.5, 0, 255).astype(np.uint8)
@@ -916,27 +1228,33 @@ def main():
 
     # With an extension her mattes are made after it is painted in, on the
     # extended frames; only the first frame's is needed before, for the colours.
-    masks = matte_all(frames[:1] if args.extend else frames)
+    masks = matte_all(frames[:1] if args.extend else frames, snap[:1] if args.extend else snap)
 
     full_plate = cv2.cvtColor(cv2.imread(args.plate), cv2.COLOR_BGR2RGB)
     plate = cv2.resize(full_plate, (w, h), interpolation=cv2.INTER_AREA)
-    fit = colour_fit(frames[0], plate, masks[0])
-    print('colour fit (a, b):', np.round(fit, 3).tolist(), file=sys.stderr)
+    if args.fit:
+        fit = np.array([float(v) for v in args.fit.split(',')]).reshape(3, 2)
+        print('colour fit (a, b): given', np.round(fit, 3).tolist(), file=sys.stderr)
+    else:
+        fit = colour_fit(frames[0], plate, masks[0])
+        print('colour fit (a, b):', np.round(fit, 3).tolist(), file=sys.stderr)
     lut = np.clip(np.arange(256)[None, :] * fit[:, :1] + fit[:, 1:], 0, 255).astype(np.uint8)
     frames = np.stack([np.dstack([lut[c][f[..., c]] for c in range(3)]) for f in frames])
-    count = int(round(seconds * OUT_FPS)) + 1
+    count = int(round(seconds * args.fps)) + 1
     if args.core:
         reach = (args.core_reach, args.core_reach) if args.core_reach else (280, 260)
-        relight_core(frames, times, tuple(int(v) for v in args.core.split(',')), args.core_min, reach, args.core_max)
+        relight_core(frames, times + args.core_start, tuple(int(v) for v in args.core.split(',')), args.core_min, reach, args.core_max)
     if args.extend:
         load_rgb = lambda path: cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
         frames = extend(frames, times, full_plate, load_rgb(args.extend), load_rgb(args.extend_free), args.extend_px)
         h = frames.shape[1]
-        masks = matte_all(frames)
+        masks = matte_all(frames, snap)
     out_size = (args.width, int(round(args.width * h / w / 2)) * 2)
     print(f'output {out_size[0]}x{out_size[1]}', file=sys.stderr)
     sources = {}
-    hair_zone = tuple(int(v) for v in args.hair_zone.split(',')) if args.hair_zone else None
+    hair_zone = ('auto' if args.hair_zone == 'auto' else tuple(int(v) for v in args.hair_zone.split(','))) if args.hair_zone else None
+    hair_dark = tuple(float(v) for v in args.hair_dark.split(',')) if args.hair_dark else HAIR_DARK
+    hair_blue = tuple(float(v) for v in args.hair_blue.split(',')) if args.hair_blue else HAIR_BLUE
     shadow = None
     if args.shadow:
         dx, dy, blur, opacity = (float(v) for v in args.shadow.split(','))
@@ -948,20 +1266,36 @@ def main():
         if i not in sources:
             if len(sources) > 2:
                 sources.pop(min(sources))
-            pre, a = premultiplied(frames[i], masks[i], hair_zone)
+            pre, a = premultiplied(frames[i], masks[i], hair_zone, hair_dark, args.edge_fit, args.hair_strands, hair_blue)
             rgb = deblue(pre / np.maximum(a, 1e-3)[..., None])
             sources[i] = (np.clip(rgb, 0, 255) * a[..., None], a)
         return sources[i]
 
     encode = subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', f'{out_size[0]}x{out_size[1]}',
-                               '-r', str(OUT_FPS), '-i', '-', '-c:v', 'hevc_videotoolbox', '-alpha_quality', '0.9', '-q:v', str(args.quality),
+                               '-r', str(args.fps), '-i', '-', '-c:v', 'hevc_videotoolbox', '-alpha_quality', '0.9', '-q:v', str(args.quality),
                                '-tag:v', 'hvc1', '-movflags', '+faststart', args.out], stdin=subprocess.PIPE)
     preview = None
     if args.preview:
         preview = subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{out_size[0]}x{out_size[1]}',
-                                    '-r', str(OUT_FPS), '-i', '-', '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p',
+                                    '-r', str(args.fps), '-i', '-', '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p',
                                     args.preview], stdin=subprocess.PIPE)
         band = np.zeros((out_size[1], out_size[0], 3), np.float32) + np.array((16, 15, 32), np.float32)
+
+    # --meta / --poster: besides encoding, frame 0 is kept (both need it), and
+    # with --meta every frame's low-res premultiplied RGBA (safe, the leading
+    # and trailing freeze) and coarse alpha grid (mask) are kept too. None of
+    # this runs, or costs anything, without the flag that needs it.
+    want_frame0 = bool(args.meta) or bool(args.poster)
+    frame0_rgba = None
+    low_res, grids = (None, None)
+    mask_bounds = None
+    head_box = None
+    if args.meta:
+        low_res, grids, heads = [], [], []
+        row_bounds = np.linspace(0, out_size[1], MASK_ROWS + 1).round().astype(int)
+        col_bounds = np.linspace(0, out_size[0], MASK_COLS + 1).round().astype(int)
+        mask_bounds = (row_bounds, col_bounds)
+        lr_h = max(1, round(MASK_LOW_RES * out_size[1] / out_size[0]))
 
     dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -974,12 +1308,23 @@ def main():
         return cached[i]
 
     warp = lambda image, mx, my: cv2.remap(image, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    opened, open_frames = None, 0
+    if args.open_on:
+        image = cv2.cvtColor(cv2.imread(args.open_on, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA)
+        opened = opening(image, tuple(float(v) for v in args.open_rect.split(',')), out_size)
+        open_frames = max(1, int(round(args.open_seconds * args.fps)))
     for k in range(count):
-        now = k / OUT_FPS
+        now = k / args.fps
         i = min(int(np.searchsorted(times, now, side='right')) - 1, n - 1)
         t = 0.0 if i >= n - 1 else float((now - times[i]) / (times[i + 1] - times[i]))
         if t < 1e-4 or i >= n - 1:
             pre, a = source(i)
+        elif snap[i] or snap[i + 1]:
+            # --snap: this source interval is too fast for DIS flow to bridge
+            # without a double-exposure ghost, so skip the blend entirely and
+            # just hold whichever source frame t is nearer to (animation on
+            # twos), exactly like the t < 1e-4 case above but mid-clip.
+            pre, a = source(i if t < 0.5 else i + 1)
         else:
             fwd, bwd = pair(i)
             (pre0, a0), (pre1, a1) = source(i), source(i + 1)
@@ -990,17 +1335,135 @@ def main():
             pre = warp(pre0, ax, ay) * (1 - t) + warp(pre1, bx, by) * t
             a = warp(a0, ax, ay) * (1 - t) + warp(a1, bx, by) * t
         rgba = output(pre, a, out_size, shadow)
+        if args.islands is not None:
+            islands(rgba, args.islands)
+        if opened is not None and k < open_frames:
+            # Smoothstep from all image (k = 0) to all clip; both are
+            # premultiplied, so the mix is too, and colour stays at or below
+            # alpha once rounding is clamped.
+            u = k / open_frames
+            clip_share = u * u * (3 - 2 * u)
+            mixed = np.clip(rgba.astype(np.float32) * clip_share + opened * (1 - clip_share) + 0.5, 0, 255).astype(np.uint8)
+            mixed[..., :3] = np.minimum(mixed[..., :3], mixed[..., 3:])
+            rgba = mixed
         encode.stdin.write(rgba.tobytes())
         if preview:
             alpha = rgba[..., 3:].astype(np.float32) / 255
             preview.stdin.write(np.clip(rgba[..., :3] + band * (1 - alpha), 0, 255).astype(np.uint8).tobytes())
+        if want_frame0 and k == 0:
+            frame0_rgba = rgba.copy()
+        if args.meta:
+            low_res.append(cv2.resize(rgba, (MASK_LOW_RES, lr_h), interpolation=cv2.INTER_AREA).astype(np.float32))
+            if head_box is None:
+                head_box = head_region(rgba[..., 3])
+            hy0, hy1, hx0, hx1 = head_box
+            heads.append(head_gray(rgba[hy0:hy1, hx0:hx1]))
+            alpha_frac = rgba[..., 3].astype(np.float32) / 255
+            row_bounds, col_bounds = mask_bounds
+            grid = np.zeros((MASK_ROWS, MASK_COLS), bool)
+            for r in range(MASK_ROWS):
+                rows = alpha_frac[row_bounds[r]:row_bounds[r + 1]]
+                for c in range(MASK_COLS):
+                    grid[r, c] = rows[:, col_bounds[c]:col_bounds[c + 1]].max() > 0.1
+            grids.append(grid)
     for process in (encode, preview):
         if process:
             process.stdin.close()
             process.wait()
             if process.returncode:
                 sys.exit('ffmpeg failed')
-    print(f'wrote {count} frames at {OUT_FPS} fps -> {args.out}', file=sys.stderr)
+    print(f'wrote {count} frames at {args.fps} fps -> {args.out}', file=sys.stderr)
+
+    if args.poster:
+        a0 = frame0_rgba[..., 3].astype(np.float32)
+        rgb0 = frame0_rgba[..., :3].astype(np.float32)
+        # Un-premultiply: output() kept colour at or below alpha (0-255 scale).
+        straight = np.where(a0[..., None] > 0, np.clip(rgb0 * 255.0 / np.maximum(a0, 1)[..., None], 0, 255), 0)
+        poster = np.dstack([straight.astype(np.uint8), frame0_rgba[..., 3]])
+        Path(args.poster).parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(args.poster, cv2.cvtColor(poster, cv2.COLOR_RGBA2BGRA))
+        print(f'wrote {args.poster} ({out_size[0]}x{out_size[1]}, straight alpha)', file=sys.stderr)
+
+    if args.meta:
+        low_res = np.stack(low_res)  # (count, lr_h, MASK_LOW_RES, 4)
+        step = np.abs(np.diff(low_res, axis=0)).mean(axis=(1, 2, 3)) if count > 1 else np.zeros(0)
+        dist0 = np.abs(low_res - low_res[0]).mean(axis=(1, 2, 3))
+        # The low-res frames hide a face that moved a few px, a blink or a
+        # tilt of the head (all under a pixel at 48 px across), so the pet
+        # cross-faded two faces apart; her head is compared at full res too.
+        head0 = np.abs(np.stack(heads) - heads[0]).mean(axis=(1, 2))
+        print('--meta: head distance from frame 0: ' + ' '.join(f'{v:.2f}' for v in head0), file=sys.stderr)
+        still = head0 <= HEAD_SAFE
+        span = max(1, round(HANDOFF_SECONDS * args.fps))
+        print('--meta: frame-to-frame motion: ' + ' '.join(f'{v:.2f}' for v in step), file=sys.stderr)
+        print('--meta: distance from frame 0: ' + ' '.join(f'{v:.2f}' for v in dist0), file=sys.stderr)
+
+        # Whether frame 0 is her neutral pose: --align-to's own job is lining
+        # it up with the plate, so a confident match (align() found enough
+        # inliers) is the signal, not a raw pixel match against the plate --
+        # colour_fit and deblue both deliberately move the clip's colour away
+        # from the plate's own, and Seedance's first frame never reproduces a
+        # still image exactly, so even a correctly aligned frame 0 sits 9-10
+        # (0-255 scale) from the plate: nowhere near a usable "they match" cutoff.
+        neutral_match = aligned_to_plate
+
+        hold = 0
+        while hold < len(step) and step[hold] < FREEZE_MOTION:
+            hold += 1
+        from_frame = min(max(hold, 1) if neutral_match else hold, count - 1)
+        # Playback starts where the incoming clip is still on frame 0's pose
+        # for the whole cross-fade: within the leading hold, the last frame
+        # that leaves `span` frames of her head unmoved after it.
+        run = 0
+        while run + 1 < count and still[run + 1]:
+            run += 1
+        from_frame = max(1, min(from_frame, run - span)) if count > 1 else 0
+
+        trail = 0
+        while trail < len(step) and step[len(step) - 1 - trail] < FREEZE_MOTION:
+            trail += 1
+        min_trail = max(1, round(FREEZE_SECONDS * args.fps))
+        to_frame = max(count - 1 - trail, from_frame) if trail >= min_trail else count - 1
+        # Nor does it end on a face that has not come back yet: `to` moves
+        # into the run of frames, up to the last, whose head is frame 0's.
+        tail = count - 1
+        while tail - 1 > from_frame and still[tail - 1]:
+            tail -= 1
+        if still[count - 1]:
+            to_frame = max(to_frame, tail)
+
+        # A safe frame hands over mid-clip, and the outgoing clip keeps
+        # playing through the cross-fade: from two frames before it (the
+        # page's LEAD) for `span` frames, every frame must be near frame 0,
+        # whole and head both.
+        near = (dist0 <= args.safe_threshold) & still
+        safe = sorted({i for i in range(count) if near[max(0, i - 2):i + span].all() and i + span <= count}
+                      | {from_frame, to_frame})
+
+        windows = []
+        every = max(1, round(args.fps / 4))
+        for start in range(0, count, every):
+            union = np.zeros((MASK_ROWS, MASK_COLS), bool)
+            for g in grids[start:start + every]:
+                union |= g
+            dilated = cv2.dilate(union.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+            windows.append(encode_mask(dilated))
+
+        meta = {
+            'frames': count,
+            'seconds': (count - 1) / args.fps,
+            'fps': args.fps,
+            'size': list(out_size),
+            'box': alpha_box(frame0_rgba[..., 3]),
+            'from': int(from_frame),
+            'to': int(to_frame),
+            'safe': safe,
+            'mask': {'every': every, 'cols': MASK_COLS, 'rows': MASK_ROWS, 'frames': windows},
+        }
+        Path(args.meta).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.meta).write_text(json.dumps(meta) + '\n')
+        print(f'wrote {args.meta}: frame 0 {"is" if neutral_match else "is not"} the neutral pose; from {from_frame}, to {to_frame}, '
+              f'{len(safe)} safe frame(s), {len(windows)} mask window(s)', file=sys.stderr)
 
 
 if __name__ == '__main__':
