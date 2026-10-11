@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file: data:; media-src 'self' file:; style-src 'unsafe-inline'; script-src 'self' file:">
+<title>Claude Intro</title>
+<style>
+:root { --corner: 16px; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; cursor: default; -webkit-user-select: none; user-select: none; }
+#backdrop {
+  position: fixed; inset: 0; opacity: 0; border-radius: var(--corner);
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 50%, rgba(255, 122, 26, .10), transparent 70%),
+    radial-gradient(ellipse at 50% 50%, rgba(18, 14, 34, .90), rgba(4, 4, 10, .97) 75%);
+}
+#scan {
+  position: fixed; inset: 0; opacity: 0; pointer-events: none; border-radius: var(--corner);
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .025) 0 1px, transparent 1px 3px);
+}
+#stage { position: fixed; inset: 0; display: grid; place-items: center; }
+/* As long as intro.js's DURATION_MS: in by 0.2s, out over the last 0.5s. */
+.playing #backdrop, .playing #scan { animation: backdrop 12.1s linear both; }
+@keyframes backdrop { 0% { opacity: 0 } 1.653% { opacity: 1 } 95.868% { opacity: 1 } 100% { opacity: 0 } }
+</style>
+</head>
+<body>
+<div id="backdrop"></div>
+<div id="scan"></div>
+<div id="stage"></div>
+<script src="intro.js"></script>
+<script src="start.js"></script>
+</body>
+</html>
