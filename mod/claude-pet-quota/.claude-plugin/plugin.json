@@ -1,0 +1,7 @@
+{
+  "name": "pet-quota",
+  "version": "1.1.0",
+  "description": "Publishes this account's plan rate-limit usage to a local JSON file for the Claude Intro 3D desktop pet to read.",
+  "author": { "name": "YorenZZZ" },
+  "license": "MIT"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "claude-intro-3d",
+  "description": "Mods for the Claude Intro 3D desktop pet.",
+  "owner": { "name": "YorenZZZ" },
+  "plugins": [
+    { "name": "pet-quota", "source": "./claude-pet-quota" }
+  ]
+}
