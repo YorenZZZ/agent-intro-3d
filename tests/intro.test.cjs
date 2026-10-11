@@ -372,3 +372,16 @@ test('only Esc skips the intro: corner hint, no click-to-skip, other keys swallo
   assert.ok(!/return event/.test(monitor), 'no key is passed on')
   assert.ok(!/case "skip"/.test(swift), 'no page message skips it')
 })
+
+test('a recording shows the landing shadow when playback does: from touchdown, over 0.3 s', () => {
+  // Snapshots run several times slower than real time, so the wall-clock
+  // timer playback uses would bring the shadow in while she is still high up.
+  assert.equal(intro.landingShadowOpacity(0), 0)
+  assert.equal(intro.landingShadowOpacity(intro.LANDING_TOUCHDOWN_MS), 0)
+  assert.equal(intro.landingShadowOpacity(intro.LANDING_TOUCHDOWN_MS + 150), 0.5)
+  assert.equal(intro.landingShadowOpacity(intro.LANDING_TOUCHDOWN_MS + 300), 1)
+  assert.equal(intro.landingShadowOpacity(99999), 1)
+  const source = fs.readFileSync(path.join(web, 'intro.js'), 'utf8')
+  assert.match(source, /opacity \.3s linear/, 'playback fades it over 0.3 s, as landingShadowOpacity assumes')
+  assert.match(source, /setTimeout\(\(\) => \{\s*if \(frozen\) return/, 'the playback timer leaves a recording alone')
+})

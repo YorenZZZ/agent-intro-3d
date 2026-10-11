@@ -132,6 +132,9 @@
   // built clip: build/source/pet/seedance-prompts.md's ~1.3s on the original
   // timing, carried through the leading-frame trim --align-to applies).
   const LANDING_TOUCHDOWN_MS = 960
+  // Her landing shadow's opacity ms into landing.mov: nothing until she
+  // touches down, then the same 0.3s linear fade playback runs.
+  const landingShadowOpacity = ms => Math.min(1, Math.max(0, (ms - LANDING_TOUCHDOWN_MS) / 300))
   // One is picked at random on every start; at most 16 characters each, so
   // the greeting fits its strip.
   const LINES = [
@@ -872,7 +875,10 @@ ${ESC_HINT}`
       shadow.style.height = `${rect.height}px`
       shadow.style.transition = 'none'
       shadow.style.opacity = '0'
+      // A recording sets it per frame instead (seek(): landingShadowOpacity);
+      // this wall-clock timer would run ahead of its slow snapshots.
       root.setTimeout(() => {
+        if (frozen) return
         shadow.style.transition = 'opacity .3s linear'
         shadow.style.opacity = '1'
       }, LANDING_TOUCHDOWN_MS)
@@ -950,6 +956,8 @@ ${ESC_HINT}`
           await seekVideo(exitClip, Math.max(0, Math.min(exitClip.duration || 0, (ms - coreEnd) / 1000)))
         } else if (ms >= landingAt) {
           if (root.document.getElementById('landingWrap').style.display !== 'block') landingOn(root.document)
+          const shadow = root.document.getElementById('landingShadow')
+          if (shadow) shadow.style.opacity = String(landingShadowOpacity(ms - landingAt))
           await seekVideo(landingClip, Math.max(0, Math.min(landingClip.duration || 0, (ms - landingAt) / 1000)))
         }
       } else {
@@ -961,7 +969,7 @@ ${ESC_HINT}`
 
   const api = {
     DURATION_MS, CORE_MS, HOLD_AT_MS, SCENE_CLOSE_MS, PET_CONFIRM_BY_MS, petConfirmable, LINES, NIGHT_LINES, CLIP, CLIP_AT_MS, EXIT_CLIP, LANDING_CLIP,
-    PET_BOX, LANDING_BOX, LANDING_TOUCHDOWN_MS, PEAK, RIGHT,
+    PET_BOX, LANDING_BOX, LANDING_TOUCHDOWN_MS, landingShadowOpacity, PEAK, RIGHT,
     introText, introMarkup, layout, landingLayout, petShadowLayout, sceneMs, setPet, prepare, play, seek,
   }
   if (typeof module === 'object' && module.exports) module.exports = api
