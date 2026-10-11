@@ -201,6 +201,7 @@ HAIR_DARK = (58.0, 78.0)
 HAIR_SMOOTH = (10.0, 16.0)
 EDGE_SIGMA = 4.0  # --edge-fit: px (clip) over which her opaque colour is spread out into her soft edge
 EDGE_SURE = (30.0, 70.0)  # --edge-fit: her colour's distance from the backdrop where the fitted alpha starts to count, and where it counts fully
+GAP_NEAR, GAP_FAR = 14.0, 30.0  # --body-gaps: RGB distance from the backdrop behind her within which a pixel is all backdrop, and past which none of it is
 # A frame is a repeat of the one before it when it moves less than this share
 # of its neighbours' steps, and both move more than REPEAT_MOVING (mean grey
 # level change at quarter size): see unrepeat().
@@ -363,6 +364,34 @@ def hair_gaps(frame, matte, zone, dark=HAIR_DARK, strands=0, blue=HAIR_BLUE):
     return cv2.GaussianBlur(k, (0, 0), 0.7)
 
 
+def body_gaps(c, bg, matte, least):
+    """--body-gaps: how much of each pixel is backdrop seen through a gap she
+    encloses that Vision took as part of her (between her arm and her waist
+    as she stands, between her legs as she crouches), 0-1; on a window it
+    shows as a dark smudge on her. hair_gaps' dark-and-blue test would eat
+    the shaded underside of her white suit here, so a pixel only counts when
+    it is nearly the backdrop's own colour behind her (bg), in one smooth
+    patch of at least `least` px: her black gloves and belt, close to it,
+    have highlights and seams, and dark pixels in her suit's seams are
+    smaller."""
+    ramp = lambda v, a, b: (lambda k: k * k * (3 - 2 * k))(np.clip((v - a) / (b - a), 0, 1))
+    k = 1 - ramp(np.sqrt(((c - bg) ** 2).sum(axis=2)), GAP_NEAR, GAP_FAR)
+    patches = ((k > 0.5) & (matte > 128)).astype(np.uint8)
+    count, labels = cv2.connectedComponents(patches)
+    if count < 2:
+        return np.zeros(matte.shape, np.float32)
+    luma = c @ np.array([0.299, 0.587, 0.114], np.float32)
+    grad = np.hypot(cv2.Sobel(luma, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(luma, cv2.CV_32F, 0, 1, ksize=3))
+    core = cv2.erode(patches, np.ones((3, 3), np.uint8)) > 0
+    sizes = np.bincount(labels.ravel(), minlength=count)
+    taken = np.zeros(count, np.float32)
+    for j in range(1, count):
+        g = grad[(labels == j) & core]
+        if sizes[j] >= least and g.size > 5:
+            taken[j] = 1 - ramp(float(np.median(g)), *HAIR_SMOOTH)
+    return cv2.GaussianBlur(k * taken[labels], (0, 0), 0.7)
+
+
 def head_zone(matte, share=0.3):
     """--hair-zone auto: this frame's own head zone (X0, Y0, X1, Y1), the top
     share of her matte's bbox, for a clip whose head moves too far for one
@@ -399,7 +428,7 @@ def edge_alpha(c, bg, a):
     return np.where(edge, np.minimum(a, sure * share + (1 - sure) * a), a)
 
 
-def premultiplied(frame, matte, hair_zone=None, hair_dark=HAIR_DARK, edge_fit=False, hair_strands=0, hair_blue=HAIR_BLUE):
+def premultiplied(frame, matte, hair_zone=None, hair_dark=HAIR_DARK, edge_fit=False, hair_strands=0, hair_blue=HAIR_BLUE, gaps=0):
     """Her colour times her alpha, with the plate taken out of soft edges.
     Vision's soft ramp reaches a little past her into plain plate; where an
     edge pixel is barely different from the plate behind it, its alpha is
@@ -420,6 +449,8 @@ def premultiplied(frame, matte, hair_zone=None, hair_dark=HAIR_DARK, edge_fit=Fa
         hair_zone = head_zone(matte)
     if hair_zone:
         a = np.minimum(a, 1 - hair_gaps(frame, matte, hair_zone, hair_dark, hair_strands, hair_blue))
+    if gaps:
+        a = np.minimum(a, 1 - body_gaps(c, bg, matte, gaps))
     a = a[..., None]
     return np.clip(c - (1 - a) * bg, 0, 255 * a), a[..., 0]
 
@@ -1096,6 +1127,7 @@ def main():
     parser.add_argument('--edge-fit', action='store_true', help='take her soft edge\'s alpha from its colour between the backdrop and her own (see edge_alpha); for a clip shown on a light window')
     parser.add_argument('--hair-strands', type=int, default=0, help='PX (clip): dark blue patches in --hair-zone smaller than this are backdrop by colour alone, skipping the smoothness test (the gaps between her hair strands)')
     parser.add_argument('--hair-blue', help=f'LO,HI: blue over red and green where a dark pixel in --hair-zone starts to count as backdrop, and where it counts fully (default {HAIR_BLUE[0]:g},{HAIR_BLUE[1]:g}); lower it so strands mixed with the backdrop (greyer than it) go too')
+    parser.add_argument('--body-gaps', type=int, default=0, help='PX: open up backdrop she encloses that Vision took as part of her (between her arm and waist, between her legs), in smooth patches of at least PX px nearly the backdrop\'s own colour (see body_gaps); for a clip shown on a window')
     parser.add_argument('--hair-dark', help=f'LO,HI: luma (0-255) below which a dark blue pixel in --hair-zone is all backdrop, and above which none of it is (default {HAIR_DARK[0]:g},{HAIR_DARK[1]:g}); lower it where the shaded side of her white suit is that blue')
     parser.add_argument('--shadow', help='DX,DY,BLUR,OPACITY: a soft shadow of her under her (clip px; see output)')
     parser.add_argument('--then', help='a second clip made from the first one\'s last frame, played after it')
@@ -1266,7 +1298,7 @@ def main():
         if i not in sources:
             if len(sources) > 2:
                 sources.pop(min(sources))
-            pre, a = premultiplied(frames[i], masks[i], hair_zone, hair_dark, args.edge_fit, args.hair_strands, hair_blue)
+            pre, a = premultiplied(frames[i], masks[i], hair_zone, hair_dark, args.edge_fit, args.hair_strands, hair_blue, args.body_gaps)
             rgb = deblue(pre / np.maximum(a, 1e-3)[..., None])
             sources[i] = (np.clip(rgb, 0, 255) * a[..., None], a)
         return sources[i]

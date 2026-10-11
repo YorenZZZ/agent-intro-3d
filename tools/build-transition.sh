@@ -145,6 +145,15 @@ FIT="0.862,16.315,0.836,17.694,0.824,20.976"
 # (track_core() re-finds it every frame within reach, so this only needs to
 # be close): see the session's report for how it was located.
 CORE="603,1148"
+# The same matte as the sidebar pet (tools/build-pet.sh explains each flag):
+# she leaps out of the intro and lands as the pet, so neither leg of the
+# jump may show the grey rim or the dark smudges between her hair strands
+# and coat that the pet's clips no longer have. landing.mov also takes
+# --body-gaps: standing, she encloses the backdrop between her arm and her
+# waist, which Vision keeps in her as a dark wedge right on the sidebar.
+# exit.mov does not: it plays over the intro's own dark scene, carrying on
+# from awakening.mov's last frame, which has no such pass to match.
+MATTE=(--hair-zone auto --hair-dark 45,100 --hair-blue 4,12 --hair-strands 400 --edge-fit)
 
 echo "== exit.mov =="
 nice -n 20 "$python_bin" "$root/tools/build-clip.py" \
@@ -155,6 +164,7 @@ nice -n 20 "$python_bin" "$root/tools/build-clip.py" \
   --core "$CORE" --core-start 12.0 \
   --squeeze 45:66:3 \
   --snap 38:43,69:72 \
+  "${MATTE[@]}" \
   --width 1248 --fps 60 --quality 50 \
   --out "$out/exit.mov" </dev/null
 
@@ -169,14 +179,17 @@ nice -n 20 "$python_bin" "$root/tools/build-clip.py" \
   --islands 160 \
   --open-on "$root/Resources/web/pet/clips/poster.png" \
   --open-rect 0,0.7198,0.3741,0.2802 --open-seconds 0.5 \
-  --width 1080 --fps 60 --quality 80 \
+  "${MATTE[@]}" --body-gaps 150 \
+  --width 1080 --fps 60 --quality 95 \
   --out "$work/landing-reversed-out.mov" </dev/null
-# --quality 80 above is only this intermediate file's, encoded again just
-# below; that last pass is -q:v 65, not exit.mov's 50: at 50 her last frame
-# came out visibly softer than the poster it hands over to (Laplacian
-# variance 189 vs the poster's 302; 253 at 65, for about 0.3 MB more).
+# --quality 95 above is only this intermediate file's, encoded again just
+# below, so it loses as little as it can; that last pass is -q:v 75, not
+# exit.mov's 50: she is small in landing.mp4 and shown scaled up over the
+# sidebar, where every encode's softening reads as a plastic sheen (at 50
+# her last frame came out visibly softer than the poster it hands over to:
+# Laplacian variance 189 vs the poster's 302; 253 at 65).
 nice -n 20 ffmpeg -v error -y -i "$work/landing-reversed-out.mov" -threads 2 -vf reverse \
-  -c:v hevc_videotoolbox -alpha_quality 0.9 -q:v 65 -tag:v hvc1 -movflags +faststart \
+  -c:v hevc_videotoolbox -alpha_quality 0.9 -q:v 75 -tag:v hvc1 -movflags +faststart \
   "$out/landing.mov"
 
 ls -l "$out/exit.mov" "$out/landing.mov"
