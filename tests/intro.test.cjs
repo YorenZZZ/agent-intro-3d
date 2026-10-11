@@ -313,6 +313,21 @@ test('setPet is exported, and a usable rect is required to do anything', () => {
   intro.setPet(undefined)
 })
 
+test('a cold launch still gets the pet ending: the app keeps re-sending her spot, the page takes a first one until just before her fade', () => {
+  // On a real Claude launch the window is still settling at 'ready', so the
+  // pet's rect is not known yet; a one-shot setPet there fell back to the
+  // plain ending every time Claude quit and started as two separate events.
+  assert.ok(intro.PET_CONFIRM_BY_MS < intro.HOLD_AT_MS, 'a first rect must arrive before her .cexit fade and the scene hold')
+  assert.ok(intro.PET_CONFIRM_BY_MS >= intro.HOLD_AT_MS - 1000, 'the window must stay open long enough for a settling window')
+  assert.equal(intro.petConfirmable(1500), true)
+  assert.equal(intro.petConfirmable(intro.PET_CONFIRM_BY_MS), true)
+  assert.equal(intro.petConfirmable(intro.PET_CONFIRM_BY_MS + 1), false)
+  assert.equal(intro.petConfirmable(null), true, 'before play() any rect is taken')
+  const swift = fs.readFileSync(path.join(__dirname, '..', 'Sources', 'main.swift'), 'utf8')
+  assert.match(swift, /petFeed = Timer\.scheduledTimer\(withTimeInterval: 0\.25, repeats: true\)[^\n]*feedPetFrame\(\)/, 'the app re-sends the spot while she plays')
+  assert.match(swift, /private func finish[\s\S]*?petFeed\?\.invalidate\(\)/, 'finish() stops re-sending')
+})
+
 test('EXIT_CLIP and LANDING_CLIP point at the layers tools/build-transition.sh writes', () => {
   assert.equal(intro.EXIT_CLIP, 'layers/exit.mov')
   assert.equal(intro.LANDING_CLIP, 'layers/landing.mov')

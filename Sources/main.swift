@@ -138,9 +138,15 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
   // takes the pet ending (she leaps out and lands on the pet's spot).
   static var snapshotPetFrame: (x: Double, y: Double, w: Double, h: Double)?
   // The pet's clip-frame rect in the Claude window's own top-left
-  // coordinates, queried once the intro page is ready (nil if the pet's
-  // geometry isn't known yet, e.g. no PetController in --play/--snapshot).
+  // coordinates (nil if the pet's geometry isn't known yet, e.g. no
+  // PetController in --play/--snapshot). On a cold launch Claude's window is
+  // still being created and resized when the page starts, so it is nearly
+  // always nil at 'ready': petFeed asks again every 0.25s from 'ready' until
+  // she lands or the intro ends, which also keeps the landing spot current
+  // if the window is resized while she plays.
   private let petFrame: (() -> (x: Double, y: Double, w: Double, h: Double)?)?
+  private var petFeed: Timer?
+  private var petFrameSent = false
   // Called when the page posts "landed" (the pet should reveal instantly).
   private let onLanded: (() -> Void)?
   private(set) var landed = false
@@ -269,6 +275,19 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
     webView?.evaluateJavaScript("ClaudeIntro.play(document)")
   }
 
+  private func sendPet(_ frame: (x: Double, y: Double, w: Double, h: Double)) {
+    webView?.evaluateJavaScript("typeof ClaudeIntro.setPet === 'function' && ClaudeIntro.setPet({x: \(frame.x), y: \(frame.y), w: \(frame.w), h: \(frame.h)})")
+  }
+
+  private func feedPetFrame() {
+    guard !finished, !landed, let frame = petFrame?() else { return }
+    if !petFrameSent {
+      petFrameSent = true
+      Log.write("pet spot known at \(elapsed())")
+    }
+    sendPet(frame)
+  }
+
   func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
     let body = "\(message.body)"
     switch body {
@@ -278,14 +297,17 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
       playIfReady()
     case "ready":
       Log.write("playing at \(elapsed())")
-      // Handed over before any seek, so a recording plays the same ending.
-      if let frame = snapshotFolder != nil ? IntroPlayer.snapshotPetFrame : petFrame?() {
-        webView?.evaluateJavaScript("typeof ClaudeIntro.setPet === 'function' && ClaudeIntro.setPet({x: \(frame.x), y: \(frame.y), w: \(frame.w), h: \(frame.h)})")
+      if let folder = snapshotFolder {
+        // Handed over before any seek, so a recording plays the same ending.
+        if let frame = IntroPlayer.snapshotPetFrame { sendPet(frame) }
+        return captureFrames(into: folder)
       }
-      if let folder = snapshotFolder { return captureFrames(into: folder) }
+      feedPetFrame()
+      petFeed = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.feedPetFrame() }
       DispatchQueue.main.asyncAfter(deadline: .now() + durationSeconds + 2) { [weak self] in self?.finish() }
     case "landed":
       Log.write("pet landed; revealing instantly")
+      petFeed?.invalidate()
       landed = true
       onLanded?()
       finish(fade: 0)
@@ -337,6 +359,7 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
     guard !finished else { return }
     finished = true
     follow?.invalidate()
+    petFeed?.invalidate()
     if let keys { NSEvent.removeMonitor(keys) }
     keys = nil
     let panel = self.panel

@@ -54,7 +54,7 @@
 //  11.60–12.10 the backdrop fades and the app underneath shows through
 //  at CORE_MS  'done' is posted
 //
-// With one (setPet called before the band opens; see prepare()), her clip
+// With one (a first setPet by PET_CONFIRM_BY_MS; see setPet()), her clip
 // plays through to its own last frame unchanged -- she never fades -- and at
 // CORE_MS (her clip's natural end, in the same window the fade used to run)
 // hands off to layers/exit.mov in the same CHAR_BOX, so there is no jump in
@@ -103,6 +103,14 @@
   // the rest of CORE_MS to close it, before she drops back in.
   const HOLD_AT_MS = CORE_MS - 700
   const SCENE_CLOSE_MS = CORE_MS - HOLD_AT_MS
+  // The latest a first setPet can still switch to the pet ending: before
+  // HOLD_AT_MS, where her .cexit fade and the scene's closing begin
+  // (cancelling the fade halfway would snap her back to full opacity). On a
+  // cold launch the native app only learns the pet's rect once Claude's new
+  // window has settled, a second or so after play(), so it keeps re-sending
+  // it; a first rect after this is ignored and the plain ending plays.
+  const PET_CONFIRM_BY_MS = HOLD_AT_MS - 400
+  const petConfirmable = sincePlayMs => !(sincePlayMs > PET_CONFIRM_BY_MS)
   // The band's own animations run SPAN seconds, tied to CORE_MS (not
   // DURATION_MS): the pet ending only adds time after the band's own
   // choreography, never stretches it. Their keyframes are placed in seconds
@@ -692,6 +700,8 @@ ${ESC_HINT}`
   let frozen = false
   let petRect = null
   let petDoc = null
+  let playStartedAt = null
+  let lateNoted = false
   let ended = false
   // The scene's animations paused at HOLD_AT_MS (pet path), until she leaves.
   let held = null
@@ -748,12 +758,18 @@ ${ESC_HINT}`
   const petReady = () => Boolean(petRect && exitClip && landingClip)
 
   // Called by the native app once it knows the pet's geometry (see this
-  // file's header). Only stores the rect; the hand-off itself waits for her
-  // clip to reach its own last frame (see play()). If the clips were not
-  // buffered in time, or no rect ever arrives, nothing here runs and the
-  // plain ending plays exactly as it always has.
+  // file's header), and again every so often while she plays. Only stores
+  // the rect; the hand-off itself waits for her clip to reach its own last
+  // frame (see play()), and the landing reads the latest rect. If the clips
+  // were not buffered in time, or no rect arrives by PET_CONFIRM_BY_MS,
+  // nothing here runs and the plain ending plays exactly as it always has.
   function setPet(rect) {
     if (!rect || !(rect.w > 0) || !(rect.h > 0)) return
+    if (!petRect && !frozen && playStartedAt !== null && !petConfirmable(Date.now() - playStartedAt)) {
+      if (!lateNoted) post('note: pet rect arrived too late; plain ending')
+      lateNoted = true
+      return
+    }
     petRect = { x: +rect.x, y: +rect.y, w: +rect.w, h: +rect.h }
     // Her .cexit fade is cancelled the moment the pet is confirmed (well
     // before it would start, around CORE_MS - 0.6s): disabled, not removed,
@@ -872,6 +888,7 @@ ${ESC_HINT}`
     const stage = document.getElementById('stage')
     stage.innerHTML = introMarkup(introText(new Date()), Boolean(clip))
     petDoc = document
+    playStartedAt = Date.now()
     if (clip) {
       stage.querySelector('.moving').replaceWith(clip)
       if (!reducedMotion()) {
@@ -882,8 +899,8 @@ ${ESC_HINT}`
       // and the CORE_MS timeout below posts 'done' once her .cexit fade
       // (unmodified CSS) has already taken her to opacity 0.
       clip.addEventListener('ended', () => frozen || handOff(document), { once: true })
-      // setPet arrives after 'ready' below, long before this; holdScene
-      // itself checks the pet is confirmed by then.
+      // setPet arrives after 'ready' below, by PET_CONFIRM_BY_MS at the
+      // latest, before this; holdScene itself checks the pet is confirmed.
       if (!reducedMotion()) root.setTimeout(() => holdScene(document), HOLD_AT_MS)
     }
     if (petRect) setPet(petRect)  // setPet ran before play(): apply it now that the DOM exists
@@ -943,7 +960,7 @@ ${ESC_HINT}`
   }
 
   const api = {
-    DURATION_MS, CORE_MS, HOLD_AT_MS, SCENE_CLOSE_MS, LINES, NIGHT_LINES, CLIP, CLIP_AT_MS, EXIT_CLIP, LANDING_CLIP,
+    DURATION_MS, CORE_MS, HOLD_AT_MS, SCENE_CLOSE_MS, PET_CONFIRM_BY_MS, petConfirmable, LINES, NIGHT_LINES, CLIP, CLIP_AT_MS, EXIT_CLIP, LANDING_CLIP,
     PET_BOX, LANDING_BOX, LANDING_TOUCHDOWN_MS, PEAK, RIGHT,
     introText, introMarkup, layout, landingLayout, petShadowLayout, sceneMs, setPet, prepare, play, seek,
   }
