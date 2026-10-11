@@ -383,8 +383,10 @@
     showBubble()
   }
 
+  // A missing reading never blanks the bubble: it keeps the last one it had.
   function setQuota(data) {
-    lastQuota = data || null
+    if (!data) return
+    lastQuota = data
     if (bubbleMode === 'quota') renderBubble()
   }
 

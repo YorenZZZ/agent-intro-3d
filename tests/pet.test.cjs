@@ -282,3 +282,14 @@ test('pet.sh talks to the same settings the app reads', () => {
   }
   assert.equal(fs.statSync(path.join(root, 'pet.sh')).mode & 0o111, 0o111, 'pet.sh is executable')
 })
+
+test('her first click after a launch shows the last quota reading, and a missing one never blanks it', () => {
+  const swift = fs.readFileSync(path.join(__dirname, '..', 'Sources', 'pet.swift'), 'utf8')
+  // The startup check runs before the page exists, so the page's own 'ready'
+  // must get the newest reading on disk again, past the duplicate check.
+  const ready = swift.match(/case "ready":[\s\S]*?evaluate\(\)/)[0]
+  assert.match(ready, /lastQuotaSignature = "unset"\s*\n\s*checkQuota\(\)/, "'ready' re-sends the reading on disk")
+  assert.ok(!/setQuota\(null\)/.test(swift), 'the app never sends an empty reading')
+  const source = fs.readFileSync(path.join(petDir, 'pet.js'), 'utf8')
+  assert.match(source, /function setQuota\(data\) \{\s*if \(!data\) return/, 'the page ignores an empty reading')
+})

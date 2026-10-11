@@ -1021,6 +1021,10 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
       ready = true
       sentQuotaOnClick = nil
       Log.write("pet: ready (size \(size), box \(box))")
+      // The reading checked at startup went out before this page existed;
+      // hand it the newest one on disk now, or her first click shows no quota.
+      lastQuotaSignature = "unset"
+      checkQuota()
       evaluate()
     case "hit":
       lastHitInside = body["inside"] as? Bool ?? false
@@ -1366,14 +1370,12 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     case (nil, let h?): chosen = h
     case (let u?, let h?): chosen = u.updatedAt >= h.updatedAt ? u : h
     }
-    let signature = chosen.map { "\($0.source)|\($0.updatedAt.timeIntervalSince1970)" } ?? "none"
+    // Nothing readable right now: the bubble keeps the last reading it had.
+    guard let chosen else { return }
+    let signature = "\(chosen.source)|\(chosen.updatedAt.timeIntervalSince1970)"
     guard signature != lastQuotaSignature else { return }
     lastQuotaSignature = signature
-    lastQuotaUpdatedAt = chosen?.updatedAt
-    guard let chosen else {
-      webView?.evaluateJavaScript("ClaudePet.setQuota(null)")
-      return
-    }
+    lastQuotaUpdatedAt = chosen.updatedAt
     guard let data = try? JSONSerialization.data(withJSONObject: chosen.json),
           let jsonText = String(data: data, encoding: .utf8) else { return }
     webView?.evaluateJavaScript("ClaudePet.setQuota(\(jsonText))")
@@ -1388,6 +1390,7 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
   private func refreshQuotaForBubble() {
     lastUsageMTime = nil
     lastHistoryMTime = nil
+    lastQuotaSignature = "unset"
     checkQuotaIfChanged()
     if let at = lastQuotaUpdatedAt, Date().timeIntervalSince(at) < PetQuotaSource.freshSeconds { return }
     guard PetQuotaSource.requestRefresh() else { return }
