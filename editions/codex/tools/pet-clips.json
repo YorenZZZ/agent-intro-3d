@@ -1,0 +1,10 @@
+{
+  "plate": "build/source/pet/A2-clean.png",
+  "clips": [
+    {"name": "idle", "kind": "idle", "source": "build/source/pet/clips/idle.mp4"},
+    {"name": "sit", "kind": "pose", "source": "build/source/pet/clips/sit.mp4"},
+    {"name": "feet", "kind": "pose", "source": "build/source/pet/clips/feet.mp4"},
+    {"name": "snap", "kind": "pose", "source": "build/source/pet/clips/snap.mp4"},
+    {"name": "click", "kind": "reaction", "source": "build/source/pet/clips/click.mp4"}
+  ]
+}

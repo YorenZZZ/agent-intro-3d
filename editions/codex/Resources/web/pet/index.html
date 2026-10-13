@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file: data:; media-src 'self' file:; style-src 'unsafe-inline'; script-src 'self' file:; connect-src 'self' file:">
+<!--
+  connect-src is the one addition over Resources/web/index.html's policy:
+  this page fetches clips/clips.json itself (the intro's layers are plain
+  <img>/<video src> tags, never fetch()), and fetch falls back to
+  default-src 'none' without it. <video>/<img> loads stay governed by
+  media-src/img-src as before, unaffected by this.
+-->
+<title>Codex Pet</title>
+<style>
+:root {
+  --ar: 3 / 4;
+  /* Room Swift adds on both sides of her frame for the bubble (bubbleSpan). */
+  --span: 0px;
+  /* The bubble is the intro's orange HUD plate: warm black, amber
+     hairline, mono header, a very subtle shadow (the ONE
+     place on this whole page allowed a shadow: never on her, see
+     tests/pet.test.cjs). */
+  --bubble-bg: rgba(20, 11, 7, .94);
+  --bubble-border: rgba(255, 154, 102, .55);
+  --bubble-shadow: 0 4px 14px rgba(0, 0, 0, .32), 0 1px 2px rgba(0, 0, 0, .24);
+  --bubble-text: #f3ece8;
+  --bubble-text-dim: #b9aca6;
+  --bubble-accent: #e27547;
+  --bubble-track: rgba(255, 154, 102, .16);
+  --ground-shadow: rgba(31, 30, 29, .20);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground-shadow: rgba(0, 0, 0, .38);
+  }
+}
+html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; cursor: default; -webkit-user-select: none; user-select: none; }
+#stage { position: fixed; inset: 0; }
+/* The clip frame: bottom of the page, full width, height = width * H/W
+   (clips.json `size`), so the remaining space above it is BUBBLE_SPACE —
+   Swift sizes the panel so that space is exactly 120pt; this page does not
+   need to know that number, only to pin the frame to the bottom. */
+#frame { position: absolute; left: var(--span); right: var(--span); bottom: 0; aspect-ratio: var(--ar); }
+/* Only a soft ground-contact ellipse under her feet (placed from clips.json
+   `box` by pet.js), tuned low-opacity/neutral for the light sidebar
+   (#fbfbf9) so she reads as standing on its floor — no glow, rim light,
+   outline or drop shadow anywhere else; her motion comes only from the
+   clips themselves. */
+#shadow { position: absolute; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(closest-side, var(--ground-shadow) 45%, rgba(0, 0, 0, 0) 100%); }
+#poster, .clip-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+/* The incoming clip fades in above (BLEND in pet.js); the outgoing one,
+   holding the matching pose, hides only after — linear, so the blend has no
+   sudden middle. The poster sits underneath only until that first fade-in
+   has actually run its course (pet.js hides it from then on): see the
+   "double figure" bug note by beginPlayback()'s onFirstFrame. */
+.clip-video { opacity: 0; transition: opacity .2s linear .2s; }
+.clip-video[data-front] { opacity: 1; z-index: 1; transition-delay: 0s; }
+/* The speech bubble, in BUBBLE_SPACE above her head. Position (left/top) is
+   set inline by pet.js from layoutBubble(); only opacity/transform fade. */
+#bubble { position: absolute; width: max-content; max-width: 260px; opacity: 0; transform: translateY(6px);
+  transition: opacity .2s linear, transform .2s linear; pointer-events: auto; }
+#bubble.visible { opacity: 1; transform: none; }
+.qp { position: relative; background: var(--bubble-bg); border: 1px solid var(--bubble-border);
+  border-radius: 3px; padding: 10px 12px; box-shadow: var(--bubble-shadow);
+  font: 12px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', sans-serif;
+  color: var(--bubble-text); }
+.qp .hd { font: 700 10.5px/1.4 'SF Mono', Menlo, 'PingFang SC', 'Hiragino Sans GB', monospace; letter-spacing: 1px;
+  color: var(--bubble-accent); margin-bottom: 7px; display: flex; }
+.qp .hd::before { content: '/// '; white-space: pre; flex: none; }
+.qp .hd > span:first-child { margin-right: auto; white-space: nowrap; }
+.qp .hd .at { margin-left: 10px; white-space: nowrap; font-weight: 400; font-size: 10px; color: var(--bubble-text-dim); letter-spacing: 0; }
+.qp .row { margin: 8px 0; }
+.qp .row.plain { margin: 0; color: var(--bubble-text); }
+.qp .row + .row { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--bubble-border); }
+.qp .line1 { font-size: 12px; font-weight: 500; color: var(--bubble-text); }
+.qp .quota-row { margin-top: 9px; }
+.qp .quota-row .row { display:flex; justify-content:space-between; gap:12px; margin:0; font-size:12px; }
+.qp .quota-track { height:4px; background:var(--bubble-track); overflow:hidden; margin-top:5px; }
+.qp .quota-track i { display:block; height:100%; background:var(--bubble-accent); }
+.qp .amount { font: 600 20px/1.2 'SF Mono', Menlo, monospace; color: var(--bubble-text); letter-spacing: .5px; }
+.qp .bar { margin-top: 5px; height: 4px; border-radius: 0; background: var(--bubble-track); overflow: hidden; }
+.qp .bar > i { display: block; height: 100%; background: var(--bubble-accent); }
+.qp .meta { margin-top: 4px; font-size: 10.5px; color: var(--bubble-text-dim); }
+.qp .ft { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--bubble-border); font-size: 10px; color: var(--bubble-text-dim); }
+.qp .tail { position: absolute; bottom: -5px; width: 10px; height: 10px; transform: translateX(-50%) rotate(45deg);
+  background: var(--bubble-bg); border-right: 1px solid var(--bubble-border); border-bottom: 1px solid var(--bubble-border); }
+@media (prefers-reduced-motion: reduce) { .clip-video { display: none; } }
+</style>
+</head>
+<body>
+<div id="stage">
+<div id="bubble"></div>
+<div id="frame">
+<div id="shadow"></div>
+<img id="poster" alt="">
+<video id="videoA" class="clip-video" muted playsinline preload="auto"></video>
+<video id="videoB" class="clip-video" muted playsinline preload="auto"></video>
+</div>
+</div>
+<script src="pet.js"></script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "size": [120, 160],
+  "fps": 60,
+  "box": [0.30, 0.08, 0.70, 0.97],
+  "clips": {
+    "idle": {
+      "file": "idle.mov",
+      "kind": "idle",
+      "frames": 120,
+      "seconds": 2,
+      "from": 1,
+      "to": 118,
+      "safe": [1, 40, 80, 118],
+      "mask": { "every": 40, "cols": 4, "rows": 4, "frames": ["6F66", "6F66", "6F66"] }
+    },
+    "sit": {
+      "file": "sit.mov",
+      "kind": "pose",
+      "frames": 90,
+      "seconds": 1.5,
+      "from": 1,
+      "to": 88,
+      "safe": [1, 45, 88],
+      "mask": { "every": 30, "cols": 4, "rows": 4, "frames": ["6F66", "3CC3", "6F66"] }
+    },
+    "feet": {
+      "file": "feet.mov",
+      "kind": "pose",
+      "frames": 72,
+      "seconds": 1.2,
+      "from": 1,
+      "to": 70,
+      "safe": [1, 70],
+      "mask": { "every": 30, "cols": 4, "rows": 4, "frames": ["6F66", "6CC6", "6F66"] }
+    },
+    "snap": {
+      "file": "snap.mov",
+      "kind": "pose",
+      "frames": 60,
+      "seconds": 1,
+      "from": 1,
+      "to": 58,
+      "safe": [1, 20, 58],
+      "mask": { "every": 30, "cols": 4, "rows": 4, "frames": ["6F66", "6F66"] }
+    },
+    "click": {
+      "file": "click.mov",
+      "kind": "reaction",
+      "frames": 48,
+      "seconds": 0.8,
+      "from": 1,
+      "to": 46,
+      "safe": [1, 46],
+      "mask": { "every": 30, "cols": 4, "rows": 4, "frames": ["6F66", "6F66"] }
+    }
+  }
+}

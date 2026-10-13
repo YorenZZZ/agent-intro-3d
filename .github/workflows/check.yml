@@ -1,0 +1,14 @@
+name: Verify editions and selection
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/*.test.cjs
+      - run: node --test editions/claude/tests/*.test.cjs editions/codex/tests/*.test.cjs
+      - run: ./editions/codex/tests/native.sh
+      - run: ./build.sh all

@@ -1,7 +1,5 @@
-build/
+**/build/
 .DS_Store
 __pycache__/
-# Every video lives in the repository as parts under Resources/clip/
-# (tools/clip-parts.sh); build.sh joins them back.
-Resources/web/layers/*.mov
-Resources/web/pet/clips/*.mov
+**/verification/
+# Variant-local ignore files also cover reconstructed video files.
