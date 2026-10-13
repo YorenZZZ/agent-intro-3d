@@ -2,7 +2,7 @@
 
 独立的 macOS 后台小程序：Codex 启动时播放「超频机核」入场动画，结束后机械师落到左侧栏。保留当前 MiMo 定制版的角色视频、动作衔接、300pt 人物上限、轮廓点击、拖动位置记忆、主题适配、窗口移动与遮挡避让，以及对话结束后自动显示额度。
 
-来自 [YorenZZZ/agent-intro-3d](https://github.com/YorenZZZ/agent-intro-3d)（原 claude-intro-3d），保留原 MiMo 定制版的角色与动画调整，迁移为 Codex 伴侣。小米账号、Token Plan、HolySheep 余额查询和原有引擎额度插件已经移除。
+本版位于 [YorenZZZ/agent-intro-3d](https://github.com/YorenZZZ/agent-intro-3d) 的 `editions/codex` 目录（仓库原名 claude-intro-3d），保留原 MiMo 定制版的角色与动画调整，迁移为 Codex 伴侣。小米账号、Token Plan、HolySheep 余额查询和原有引擎额度插件已经移除。
 
 ![入场预览](docs/preview.webp)
 
@@ -25,11 +25,11 @@ open -n "/Applications/Codex Intro 3D.app" --args --play
 点人物：回应动作并显示订阅额度；点击外面收起。拖动人物：在侧栏内换位置并保存。右键：暂时隐藏一小时、关闭宠物、查看额度、回到默认位置。
 
 ```bash
-./pet.sh show
-./pet.sh hide
-./pet.sh quota on
-./pet.sh quota off
-./pet.sh status
+./pet.sh codex show
+./pet.sh codex hide
+./pet.sh codex quota on
+./pet.sh codex quota off
+./pet.sh codex status
 ```
 
 ## Codex 订阅额度
@@ -47,8 +47,8 @@ open -n "/Applications/Codex Intro 3D.app" --args --play
 现行 Codex 的侧栏收起状态不写入磁盘。给本应用授予 macOS 辅助功能权限后，会读取侧栏按钮的展开状态；应用不会主动弹权限请求。未授权时可以在收起 / 展开侧栏后执行：
 
 ```bash
-./pet.sh sidebar hide
-./pet.sh sidebar show
+./pet.sh codex sidebar hide
+./pet.sh codex sidebar show
 ```
 
 宽度调整、窗口移动缩放、最小化和被其他窗口遮挡时自动隐藏；人物轮廓以外区域穿透鼠标。原始 MiMo 的侧栏存储格式、62pt 图标栏与小米账户菜单坐标没有移植。

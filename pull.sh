@@ -29,11 +29,13 @@ if [[ -n "$(git status --porcelain)" ]]; then
   echo '工作区有未提交改动；先提交或 stash，再切换或更新版本。' >&2
   exit 1
 fi
-if "$update"; then git pull --ff-only; fi
-
 paths=()
 while IFS= read -r edition; do paths+=("editions/$edition"); done < <(agent_editions)
+# Select before pulling so checkout cannot fetch updated video blobs from the
+# edition the user just deselected in a partial clone.
 git sparse-checkout set --cone -- "${paths[@]}"
+# Diff statistics also read unselected blobs, defeating the partial clone.
+if "$update"; then git pull --ff-only --no-stat; fi
 git config --local agentIntro.edition "$AGENT_EDITION"
 echo "已下载：$AGENT_EDITION"
 if [[ -n "$action" ]]; then

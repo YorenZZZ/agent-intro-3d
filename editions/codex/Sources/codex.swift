@@ -153,7 +153,9 @@ final class CodexTurnWatcher {
   private struct Cursor {
     var offset: UInt64
     var pending = Data()
-    var child = false
+    // nil until a complete session_meta line is available. Never treat an
+    // incomplete or unreadable header as a parent session.
+    var child: Bool?
   }
   private let sessions: URL
   private var cursors: [String: Cursor] = [:]
@@ -166,12 +168,29 @@ final class CodexTurnWatcher {
     self.sessions = sessions
   }
 
-  private func isChild(_ data: Data) -> Bool {
-    guard let line = data.split(separator: 10).first,
-          let meta = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-          let payload = meta["payload"] as? [String: Any] else { return false }
-    if let source = payload["source"] as? [String: Any], source["subagent"] != nil { return true }
-    return payload["source"] as? String == "subagent"
+  private func isChild(_ handle: FileHandle) -> Bool? {
+    // Actual rollout headers include instructions and can exceed 16 KiB.
+    // Read only the first complete line, with a bound for malformed files.
+    let maximum = 1024 * 1024
+    var line = Data()
+    do {
+      try handle.seek(toOffset: 0)
+      while line.count < maximum {
+        guard let chunk = try handle.read(upToCount: min(16384, maximum - line.count)),
+              !chunk.isEmpty else { return nil }
+        if let newline = chunk.firstIndex(of: 10) {
+          line.append(chunk[..<newline])
+          guard let meta = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                meta["type"] as? String == "session_meta",
+                let payload = meta["payload"] as? [String: Any] else { return nil }
+          if let source = payload["source"] as? [String: Any] { return source["subagent"] != nil ? true : nil }
+          if let source = payload["source"] as? String { return source == "subagent" }
+          return nil
+        }
+        line.append(chunk)
+      }
+    } catch { return nil }
+    return nil
   }
 
   @discardableResult func poll() -> Bool {
@@ -198,11 +217,15 @@ final class CodexTurnWatcher {
       var cursor: Cursor
       if let existing = cursors[file.path], existing.offset <= length { cursor = existing }
       else {
-        let head = handle.readData(ofLength: 16384)
         let offset = !started ? length : (length > 2 * 1024 * 1024 ? length - 2 * 1024 * 1024 : 0)
-        cursor = Cursor(offset: offset, child: isChild(head))
+        cursor = Cursor(offset: offset)
       }
-      if length > cursor.offset, !cursor.child {
+      if cursor.child == nil { cursor.child = isChild(handle) }
+      guard let child = cursor.child else {
+        cursors[file.path] = cursor
+        continue
+      }
+      if length > cursor.offset, !child {
         try? handle.seek(toOffset: cursor.offset)
         cursor.pending.append(handle.readData(ofLength: Int(min(length - cursor.offset, 2 * 1024 * 1024))))
         cursor.offset = handle.offsetInFile
@@ -217,7 +240,7 @@ final class CodexTurnWatcher {
              let at = Self.timestamp(stamp), at >= began { completed = true }
         }
         if cursor.pending.count > 2 * 1024 * 1024 { cursor.pending.removeAll() }
-      } else if cursor.child { cursor.offset = length }
+      } else if child { cursor.offset = length }
       cursors[file.path] = cursor
     }
     started = true

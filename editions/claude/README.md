@@ -91,6 +91,8 @@ cd agent-intro-3d
 
 额度来自仓库里的 Claude Code 插件 [`mod/claude-pet-quota`](mod/README.md)。装上后每轮对话结束会自动更新；点她打开额度时，如果数据已超过 1 分钟，会让一个开着的 Claude Code 会话发一个 1 token 的 Haiku 请求取回最新额度（计入额度，但可以忽略），1 分钟内不管点多少次都不会重复查询。
 
+在仓库根目录安装插件：
+
 ```bash
 claude plugin marketplace add "$(pwd)/editions/claude/mod"
 claude plugin install pet-quota@claude-intro-3d
@@ -116,6 +118,8 @@ claude plugin install pet-quota@claude-intro-3d
 
 ## 换成你自己的角色
 
+以下命令在 `editions/claude` 目录中运行。
+
 1. 准备一张 3:4 竖版首帧（纯深色背景，人物四周留出足够空白，动作幅度大的部位尤其要留），用图生视频模型生成「动作」一段，再用它的最后一帧生成「待机」一段。提示词要写明镜头完全固定、不推拉环绕。
 2. 合成人物视频（需要 Python 3 + numpy / opencv、ffmpeg，以及 macOS Vision 抠像）：
 
@@ -131,6 +135,8 @@ claude plugin install pet-quota@claude-intro-3d
 4. `tools/build-portrait.sh` 从首帧切出静态备用图层，`tools/make-icon.sh` 生成 App 图标，最后重新运行 `./build.sh --install`。
 
 ## 开发
+
+以下路径与命令均相对于 `editions/claude` 目录。
 
 | 文件 | 作用 |
 | --- | --- |
@@ -163,4 +169,4 @@ claude plugin install pet-quota@claude-intro-3d
 
 ---
 
-**English:** A small macOS background app that plays a side-scrolling-action-MMO style "second awakening" cut-in over the Claude desktop app's window while it starts: an original AI-generated 3D mechanic girl (an alpha-channel HEVC clip made from two Seedance image-to-video shots) shoulders a giant wrench, wipes her nose with her thumb, gives a thumbs-up and winks, while a random greeting types out; it folds away after about 12 seconds, revealing the loaded app; only Esc skips it (a hint in the top-right corner says so), clicks and other keys never interrupt. Install with `./build.sh --install` (macOS 14+, Xcode Command Line Tools); it opens at login and waits for Claude to launch. Preview with `open -n "/Applications/Claude Intro 3D.app" --args --play`; remove with `./build.sh --uninstall`. Afterwards she jumps out and lands in Claude's left sidebar as a desktop pet: random idle poses (sitting cross-legged, checking her heel, a finger snap), a click gets a reaction plus a 5-hour/weekly quota bubble (fed by the `pet-quota` Claude Code plugin in `mod/`, refreshed at the end of every turn and, at most once a minute, on click), and she can be dragged anywhere within the current sidebar width. `./pet.sh show|hide` toggles her and `./pet.sh quota on|off` the quota bubble. The 2D version lives at [YorenZZZ/claude-intro](https://github.com/YorenZZZ/claude-intro).
+**English:** A small macOS background app that plays a side-scrolling-action-MMO style "second awakening" cut-in over the Claude desktop app's window while it starts: an original AI-generated 3D mechanic girl (an alpha-channel HEVC clip made from two Seedance image-to-video shots) shoulders a giant wrench, wipes her nose with her thumb, gives a thumbs-up and winks, while a random greeting types out; it folds away after about 12 seconds, revealing the loaded app; only Esc skips it (a hint in the top-right corner says so), clicks and other keys never interrupt. From the repository root, install with `./pull.sh claude --install` (macOS 14+, Xcode Command Line Tools); it opens at login and waits for Claude to launch. Preview with `open -n "/Applications/Claude Intro 3D.app" --args --play`; remove with `./build.sh claude --uninstall`. Afterwards she jumps out and lands in Claude's left sidebar as a desktop pet: random idle poses (sitting cross-legged, checking her heel, a finger snap), a click gets a reaction plus a 5-hour/weekly quota bubble (fed by the `pet-quota` Claude Code plugin in `editions/claude/mod/`, refreshed at the end of every turn and, at most once a minute, on click), and she can be dragged anywhere within the current sidebar width. `./pet.sh claude show|hide` toggles her and `./pet.sh claude quota on|off` the quota bubble. The 2D version lives at [YorenZZZ/claude-intro](https://github.com/YorenZZZ/claude-intro).
