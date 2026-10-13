@@ -358,30 +358,26 @@ test('nothing outlives the intro: the embers in front of her fade out with the b
 
 // Only Esc ends the intro early: the corner hint says so, the page has no
 // click handler, and Swift's key monitor swallows every other key.
-test('only Esc skips the intro: corner hint, no click-to-skip, other keys swallowed', () => {
+test('only Esc skips the intro after the app is ready: hidden corner hint, no click-to-skip', () => {
   const markup = intro.introMarkup({ title: '下午好', line: '测试' }, true)
   assert.match(markup, /id="escHint"[\s\S]*按<span class="escKey">ESC<\/span>跳过/, 'the corner hint')
+  assert.match(markup, /id="escHint" class="escHint" hidden/, 'the hint is hidden before native readiness')
   const src = fs.readFileSync(path.join(web, 'intro.js'), 'utf8')
   assert.match(src, /\.escHint\{position:fixed;right:\d+px;top:\d+px;[^}]*pointer-events:none/, 'pinned to the top-right corner, never catching clicks')
-  assert.match(src, /function handOff\(document\) \{[\s\S]*?hideEscHint\(document\)/, 'gone before she leaps out across that corner')
   const code = src.split('\n').filter(line => !/^\s*\/\//.test(line)).join('\n')
   assert.ok(!/mousedown|pointerdown|addEventListener\('click'|post\('skip'\)/.test(code), 'no click or pointer handler ends it')
   const swift = fs.readFileSync(path.join(__dirname, '..', 'Sources', 'main.swift'), 'utf8')
   const monitor = /keys = NSEvent\.addLocalMonitorForEvents\(matching: \.keyDown\)[\s\S]*?\n      \}/.exec(swift)[0]
-  assert.match(monitor, /event\.keyCode == 53/, 'Esc ends it')
+  assert.match(monitor, /event\.keyCode == 53, self\?\.skipEnabled == true, !event\.isARepeat/, 'only a fresh Esc after readiness ends it')
   assert.ok(!/return event/.test(monitor), 'no key is passed on')
   assert.ok(!/case "skip"/.test(swift), 'no page message skips it')
 })
 
 test('a recording shows the landing shadow when playback does: from touchdown, over 0.3 s', () => {
-  // Snapshots run several times slower than real time, so the wall-clock
-  // timer playback uses would bring the shadow in while she is still high up.
+  // Both live playback and slower snapshots use the landing media clock.
   assert.equal(intro.landingShadowOpacity(0), 0)
   assert.equal(intro.landingShadowOpacity(intro.LANDING_TOUCHDOWN_MS), 0)
   assert.equal(intro.landingShadowOpacity(intro.LANDING_TOUCHDOWN_MS + 150), 0.5)
   assert.equal(intro.landingShadowOpacity(intro.LANDING_TOUCHDOWN_MS + 300), 1)
   assert.equal(intro.landingShadowOpacity(99999), 1)
-  const source = fs.readFileSync(path.join(web, 'intro.js'), 'utf8')
-  assert.match(source, /opacity \.3s linear/, 'playback fades it over 0.3 s, as landingShadowOpacity assumes')
-  assert.match(source, /setTimeout\(\(\) => \{\s*if \(frozen\) return/, 'the playback timer leaves a recording alone')
 })

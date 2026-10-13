@@ -4,6 +4,8 @@
 
 本版位于 [YorenZZZ/agent-intro-3d](https://github.com/YorenZZZ/agent-intro-3d) 的 `editions/codex` 目录（仓库原名 claude-intro-3d），保留原 MiMo 定制版的角色与动画调整，迁移为 Codex 伴侣。小米账号、Token Plan、HolySheep 余额查询和原有引擎额度插件已经移除。
 
+当前版本 **1.3.0（构建 6）**：新增 100 条随机闲聊，完善完整落地、首帧交接、随机动作去重与主界面就绪后 Esc 跳过。详见 [版本记录](CHANGELOG.md)。
+
 ![入场预览](docs/preview.webp)
 
 ## 安装与使用
@@ -16,13 +18,21 @@
 
 生成通用二进制（Apple 芯片 / Intel），安装 `/Applications/Codex Intro 3D.app`，启动并登记登录项。后台程序监听 `com.openai.codex`；同时适配名为 `ChatGPT.app` 的现行客户端和独立 `Codex.app`。不改客户端包内文件。
 
-已打开 Codex 时安装会直接显示宠物；以后重启 Codex 自动播放入场。Esc 跳过，其他按键或点击不打断。立即预览：
+已打开 Codex 时安装会直接显示宠物；以后重启 Codex 自动播放入场。确认本次 Codex 主界面加载完成后，右上角才显示 Esc 提示并允许跳过；加载期间按 Esc 不会关闭入场，其他按键或点击也不打断。
+
+保留完整的下降、着地姿势和起身动作；站稳并交接到侧栏后，才开始 5 秒站立待机，再开放随机动作，并在站姿循环结束时自然衔接。入场期间提前缓冲待机视频，确认首帧实际显示后才撤掉落地画面；慢解码时以已绘制的站立图片兜底。点击回应不受这段等待限制。
+
+随机动作排除上一次实际播放的动作，中间站立、点击回应或重新入场都不会清空这条记录。预加载和点击插队后仍会再次检查，已播放完的片段不会重新排队；显式指定的动作仍可重播。
+
+立即预览：
 
 ```bash
 open -n "/Applications/Codex Intro 3D.app" --args --play
 ```
 
 点人物：回应动作并显示订阅额度；点击外面收起。拖动人物：在侧栏内换位置并保存。右键：暂时隐藏一小时、关闭宠物、查看额度、回到默认位置。
+
+人物显示时，每隔随机 45–90 秒冒出一句机械师女孩的闲聊，停留 7 秒。100 条本地文案打乱轮流抽取，一轮说完前不重复；词库在 `Resources/web/pet/chatter-lines.js`。闲聊复用额度气泡的位置和黑橙科技面板主题，只显示对话内容并穿透鼠标。额度出现时立即替换闲聊，关闭后重新随机等待；人物隐藏或重新入场时取消闲聊，不补播积压的话。
 
 ```bash
 ./pet.sh codex show
@@ -72,7 +82,7 @@ node --test tests/*.test.cjs
 - `Resources/clip/`：视频分片与 SHA-256；构建时自动重组。
 - `tools/`：视频制作、抠像与图标辅助工具。
 
-录制：`--snapshot <目录> [间隔秒] --size 宽x高 --landing`；宠物：`--pet-snapshot <目录> [间隔秒] --script sit,feet,snap,click --quota sample`。快照离屏渲染，不抢焦点。记录在 `~/Library/Logs/Codex Intro 3D/app.log`。
+录制：`--snapshot <目录> [间隔秒] --size 宽x高 --landing`；宠物：`--pet-snapshot <目录> [间隔秒] --script sit,feet,snap,click --quota sample`，加 `--chatter` 可预览闲聊及随后切换额度的效果，加 `--entrance` 验证隐藏预缓冲与首帧交接。快照离屏渲染，不抢焦点。记录在 `~/Library/Logs/Codex Intro 3D/app.log`。
 
 素材制作流程保持上游工具链：`tools/build-clip.py` 制作入场，`tools/build-pet.sh` 制作动作，`tools/build-transition.sh` 制作起跳与落地。换素材后运行 `tools/clip-parts.sh split`，同步视频时间轴与 `clips.json`，再测试构建。
 

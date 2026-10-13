@@ -18,6 +18,86 @@ enum CodexState {
   }
 }
 
+// Electron's ready-to-show only confirms the window shell. Codex logs this
+// later renderer event after its application routes mount, once startup data
+// has resolved. Read only the current process's log; never prompt for AX access
+// or infer readiness from a delay. An unknown/new log format fails closed.
+final class CodexAppReadiness {
+  private struct Cursor {
+    var offset: UInt64 = 0
+    var pending = Data()
+  }
+  private let pid: pid_t
+  private let launchedAt: Date
+  private let logs: URL
+  private var cursors: [URL: Cursor] = [:]
+  private(set) var ready = false
+
+  init(pid: pid_t, launchedAt: Date, logs: URL = FileManager.default.homeDirectoryForCurrentUser
+       .appendingPathComponent("Library/Logs/com.openai.codex", isDirectory: true)) {
+    self.pid = pid
+    self.launchedAt = launchedAt
+    self.logs = logs
+  }
+
+  static func isReadyLine(_ line: String, launchedAt: Date) -> Bool {
+    guard let space = line.firstIndex(of: " "),
+          line[space...].hasPrefix(" info [electron-message-handler] [startup][renderer] app routes mounted after ") else { return false }
+    let fields = Set(line.split(separator: " "))
+    guard fields.contains("rendererWindowAppearance=primary"),
+          fields.contains("rendererWindowVisible=true") else { return false }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    guard let date = formatter.date(from: String(line[..<space])), date >= launchedAt else { return false }
+    return true
+  }
+
+  @discardableResult func poll(at now: Date = Date()) -> Bool {
+    if ready { return true }
+    // A process can span midnight; launch-day and current-day logs cover both
+    // its first file and rotations. Accept either local or UTC date folders.
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy/MM/dd"
+    var folders = Set<URL>()
+    for zone in [TimeZone.current, TimeZone(secondsFromGMT: 0)!] {
+      formatter.timeZone = zone
+      for date in [launchedAt, now] { folders.insert(logs.appendingPathComponent(formatter.string(from: date))) }
+    }
+    let files = folders.flatMap {
+      (try? FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)) ?? []
+    }.filter { $0.lastPathComponent.hasPrefix("codex-desktop-") &&
+      $0.lastPathComponent.contains("-\(pid)-t0-") && $0.pathExtension == "log" }
+    for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).prefix(16) {
+      guard let handle = try? FileHandle(forReadingFrom: file) else { continue }
+      defer { try? handle.close() }
+      do {
+        let length = try handle.seekToEnd()
+        var cursor = cursors[file] ?? Cursor()
+        if cursor.offset > length { cursor = Cursor() }
+        try handle.seek(toOffset: cursor.offset)
+        // Bound each pass even if Codex logs a large runtime configuration.
+        let chunk = try handle.read(upToCount: 512 * 1024) ?? Data()
+        cursor.offset += UInt64(chunk.count)
+        cursor.pending.append(chunk)
+        while let newline = cursor.pending.firstIndex(of: 10) {
+          let line = String(decoding: cursor.pending[..<newline], as: UTF8.self)
+          cursor.pending.removeSubrange(...newline)
+          if Self.isReadyLine(line, launchedAt: launchedAt) {
+            ready = true
+            return true
+          }
+        }
+        // The readiness event is a short, complete line. Discard oversized
+        // unrelated fields instead of retaining arbitrary log data in memory.
+        if cursor.pending.count > 64 * 1024 { cursor.pending.removeAll() }
+        cursors[file] = cursor
+      } catch { continue }
+    }
+    return false
+  }
+}
+
 enum CodexQuota {
   static let freshSeconds: TimeInterval = 60
 

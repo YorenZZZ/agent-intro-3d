@@ -4,8 +4,8 @@
 // Runs as a background agent (no Dock icon) that opens at login. When a new
 // Codex process appears it covers the window Codex is about to open (the
 // frame Codex saved last time, then the real window once it exists) with a
-// borderless panel for about 12 seconds. Only Esc skips it (a hint in the
-// corner says so); clicks and every other key do nothing.
+// borderless panel for about 12 seconds. Once Codex's main UI is ready, Esc
+// skips it and a corner hint appears; clicks and every other key do nothing.
 //
 //   codex-intro-3d                    background agent (the normal mode)
 //   codex-intro-3d --play             play once now over Codex's window, then quit
@@ -168,14 +168,19 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
   // Called when the page posts "landed" (the pet should reveal instantly),
   // with the closure that takes this panel away: the pet calls it once it
   // has actually drawn, so there is never a frame with neither of them on
-  // screen. landedHold is the most this panel waits for that.
+  // screen. PetController also confirms its decoded poster if video is slow.
   private let onLanded: ((@escaping () -> Void) -> Void)?
-  private static let landedHold = 0.5
   private(set) var landed = false
   private let onFinish: () -> Void
   private var panel: IntroPanel?
   private var webView: WKWebView?
   private var follow: Timer?
+  private var readinessTimer: Timer?
+  private var readiness: CodexAppReadiness?
+  private let readinessQueue = DispatchQueue(label: "codex-readiness", qos: .utility)
+  private var checkingReadiness = false
+  private var appUIReady = false
+  private var skipEnabled = false
   private var keys: Any?
   private var shown = false
   // Codex's window has been on screen at least once; after that, its
@@ -197,6 +202,11 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
     self.petFrame = petFrame
     self.onLanded = onLanded
     self.onFinish = onFinish
+    // Stand-in previews have no app startup to wait for.
+    self.appUIReady = pid == nil || snapshotFolder != nil
+    if let pid, let launchedAt = NSRunningApplication(processIdentifier: pid)?.launchDate {
+      self.readiness = CodexAppReadiness(pid: pid, launchedAt: launchedAt)
+    }
   }
 
   private func elapsed() -> String { String(format: "%.2fs", Date().timeIntervalSince(began)) }
@@ -263,6 +273,10 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
       show(at: AppWindow.saved() ?? AppWindow.fallback())
     }
     follow = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.track() }
+    if !appUIReady {
+      readinessTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.checkAppReadiness() }
+      checkAppReadiness()
+    }
 
     DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
       guard let self, !self.finished, !self.playing else { return }
@@ -280,6 +294,7 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
     guard let panel else { return }
     if let window = AppWindow.live(pid: pid) {
       sawWindow = true
+      updateSkipEnabled()
       if !shown {
         show(at: window.frame, above: window.number)
       } else {
@@ -305,6 +320,35 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
   private func codexIsFront() -> Bool {
     guard let pid else { return true }
     return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+  }
+
+  private func checkAppReadiness() {
+    if readiness == nil, let pid, let launchedAt = NSRunningApplication(processIdentifier: pid)?.launchDate {
+      readiness = CodexAppReadiness(pid: pid, launchedAt: launchedAt)
+    }
+    guard !finished, !appUIReady, !checkingReadiness, let readiness else { return }
+    checkingReadiness = true
+    readinessQueue.async { [weak self] in
+      let ready = readiness.poll()
+      DispatchQueue.main.async {
+        guard let self, !self.finished else { return }
+        self.checkingReadiness = false
+        guard ready else { return }
+        self.appUIReady = true
+        self.readinessTimer?.invalidate()
+        Log.write("Codex primary UI loaded at \(self.elapsed())")
+        self.updateSkipEnabled()
+      }
+    }
+  }
+
+  private func updateSkipEnabled() {
+    guard prepared, appUIReady, sawWindow || pid == nil || snapshotFolder != nil, !skipEnabled, !finished else { return }
+    skipEnabled = true
+    // The hint and key handler share this native state, so an early Esc is
+    // swallowed just like any other key, never queued for later dismissal.
+    webView?.evaluateJavaScript("CodexIntro.setSkipEnabled(true)")
+    Log.write("Esc enabled at \(elapsed())")
   }
 
   // Before Codex's window exists: in front only while Codex is the active
@@ -345,10 +389,10 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
     // A recording takes neither the keyboard nor Esc.
     if snapshotFolder == nil, codexIsFront() { panel.makeKey() }
     if keys == nil, snapshotFolder == nil {
-      // Every key is ours while she plays: Esc ends it, any other key is
-      // swallowed here (never skips, never reaches WebKit to beep).
+      // Every key is ours while she plays: Esc only ends it after Codex has
+      // loaded. An early Esc is swallowed, never forwarded or deferred.
       keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-        if event.keyCode == 53 {  // Esc
+        if event.keyCode == 53, self?.skipEnabled == true, !event.isARepeat {  // Esc
           Log.write("skipped with Esc")
           self?.finish(fade: 0.2)
         }
@@ -385,9 +429,11 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
     case "prepared":
       prepared = true
       Log.write("layers decoded at \(elapsed())")
+      updateSkipEnabled()
       playIfReady()
     case "ready":
       Log.write("playing at \(elapsed())")
+      webView?.evaluateJavaScript("CodexIntro.setSkipEnabled(\(skipEnabled))")
       if let folder = snapshotFolder {
         // Handed over before any seek, so a recording plays the same ending.
         if let frame = IntroPlayer.snapshotPetFrame { sendPet(frame) }
@@ -395,7 +441,10 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
       }
       feedPetFrame()
       petFeed = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.feedPetFrame() }
-      DispatchQueue.main.asyncAfter(deadline: .now() + durationSeconds + 2) { [weak self] in self?.finish() }
+      DispatchQueue.main.asyncAfter(deadline: .now() + durationSeconds + 2) { [weak self] in
+        guard let self, !self.landed else { return }
+        self.finish()
+      }
     case "landed":
       Log.write("pet landed; revealing instantly")
       petFeed?.invalidate()
@@ -403,7 +452,6 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
       let close: () -> Void = { [weak self] in self?.finish(fade: 0) }
       if let onLanded {
         onLanded(close)
-        DispatchQueue.main.asyncAfter(deadline: .now() + IntroPlayer.landedHold, execute: close)
       } else {
         close()
       }
@@ -455,6 +503,7 @@ final class IntroPlayer: NSObject, WKScriptMessageHandler {
     guard !finished else { return }
     finished = true
     follow?.invalidate()
+    readinessTimer?.invalidate()
     petFeed?.invalidate()
     if let keys { NSEvent.removeMonitor(keys) }
     keys = nil

@@ -55,6 +55,8 @@ cd agent-intro-3d
 
 ## 两个版本
 
+Codex 当前版本为 **1.3.0（构建 6）**：新增 100 条随机闲聊，并完善落地交接、随机动作去重和主界面就绪后 Esc 跳过。详见 [Codex 版本记录](editions/codex/CHANGELOG.md)。
+
 | | Codex | Claude |
 | --- | --- | --- |
 | 应用 | `Codex Intro 3D.app` | `Claude Intro 3D.app` |
@@ -63,7 +65,7 @@ cd agent-intro-3d
 | 更新方式 | 本机 Codex 对话结束、点击、定时查询 | Claude Code `pet-quota` 插件 |
 | 详细说明 | [Codex 版](editions/codex/README.md) | [Claude 版](editions/claude/README.md) |
 
-两个版本都有启动入场、落地到侧栏、待机与随机动作、轮廓点击、拖动位置记忆、窗口移动与遮挡避让、主题适配和登录自启动。Esc 跳过入场。Codex 版保留最新定制角色素材；Claude 版保留原仓库的素材和额度插件。
+两个版本都有启动入场、落地到侧栏、待机与随机动作、轮廓点击、拖动位置记忆、窗口移动与遮挡避让、主题适配和登录自启动。Esc 跳过入场；Codex 版在主界面加载完成、显示提示后才允许跳过。Codex 版保留最新定制角色素材；Claude 版保留原仓库的素材和额度插件。
 
 Codex 版只显示自己的订阅额度，按实际套餐窗口显示。只返回周额度的账号只显示“本周”。查询使用桌面端自带 CLI 的官方账号接口，不调用模型；对话结束监听读取本机增量事件。侧栏收起检测需要给伴侣 App 授予辅助功能权限，未授权时支持手动侧栏开关，见版本说明。
 

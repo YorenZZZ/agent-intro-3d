@@ -73,16 +73,18 @@
 // (landingLayout; parts outside the window are simply clipped) and plays
 // from an empty frame:
 //  15.10–19.77 landing: she drops in from the upper right, arcs down-left,
-//              lands, stands and turns -- ending on the same neutral pose
-//              Resources/web/pet/clips/poster.png shows, with a soft ground
+//              lands, holds the landing pose, then stands and turns into the
+//              pet's neutral pose. This entire movement plays before the
+//              pet is revealed and its five-second idle wait begins. A soft ground
 //              ellipse (petShadowLayout, matching the pet page's own
 //              #shadow) fading in as she touches down, so the pet panel
 //              Swift reveals the instant 'landed' posts shows no seam
 //  at 'landed' the pet is shown and the intro closes with no fade (Swift);
 //              'done' is never posted on this path
 //
-// Only Esc skips, in both paths (Swift's key monitor; the page shows a
-// corner hint saying so); clicks and other keys never interrupt.
+// Once Codex's main UI is ready, Esc skips in both paths (Swift's key
+// monitor and this page's hint share that readiness). Clicks and other keys
+// never interrupt.
 ;(function (root) {
   'use strict'
 
@@ -366,11 +368,9 @@
 
   const STYLE = `
 #band{position:relative;width:800px;height:300px}
-.escHint{position:fixed;right:22px;top:20px;z-index:9;width:156px;height:30px;pointer-events:none;opacity:0;animation:flick .45s linear .8s both}
+.escHint{position:fixed;right:22px;top:20px;z-index:9;width:156px;height:30px;pointer-events:none;opacity:0;animation:flick .45s linear both}
 .escHint svg{position:absolute;inset:0;display:block}
 .escText{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;white-space:nowrap;font:600 12px/1 ${MONO};letter-spacing:1px;color:${ORANGE_HI};text-shadow:0 0 6px rgba(226,117,71,.6)}
-.escHint.off{animation:escOff .2s linear both}
-@keyframes escOff{from{opacity:1}to{opacity:0}}
 .escSlash{color:${ORANGE};letter-spacing:0;margin-right:7px}
 .escKey{margin:0 6px;padding:3px 5px 2px;border:1px solid ${ORANGE_HI};background:rgba(226,117,71,.16);font-weight:700;letter-spacing:1.5px}
 #band *{position:absolute;box-sizing:border-box}
@@ -512,7 +512,7 @@ ${flightFrames()}
   // The corner hint (only Esc skips): the HUD's own chamfered frame, corner
   // brackets and ticks, in its orange, over a dark plate so it reads on
   // whatever Codex shows behind.
-  const ESC_HINT = `<div id="escHint" class="escHint"><svg width="156" height="30" viewBox="0 0 156 30" aria-hidden="true">` +
+  const ESC_HINT = `<div id="escHint" class="escHint" hidden><svg width="156" height="30" viewBox="0 0 156 30" aria-hidden="true">` +
     `<path d="M9 .75H155.25V21L147 29.25H.75V9Z" fill="rgba(20,11,7,.74)" stroke="${ORANGE_HI}" stroke-width="1.2" stroke-opacity=".85"/>` +
     `<g fill="none" stroke="${ORANGE_HI}" stroke-width="2"><path d="M.75 15V9L9 .75h7"/><path d="M155.25 15v6L147 29.25h-7"/></g>` +
     `<g stroke="${ORANGE}" stroke-width="1" opacity=".8"><path d="M24 29.25v-3"/><path d="M30 29.25v-2"/><path d="M36 29.25v-2"/><path d="M42 29.25v-2"/></g>` +
@@ -707,6 +707,7 @@ ${ESC_HINT}`
   let playStartedAt = null
   let lateNoted = false
   let ended = false
+  let skipEnabled = false
   // The scene's animations paused at HOLD_AT_MS (pet path), until she leaves.
   let held = null
   let released = false
@@ -814,20 +815,20 @@ ${ESC_HINT}`
     for (const animation of held) animation.play()
   }
 
+  // Native code owns readiness and keyboard handling. Keep the hint hidden
+  // until Codex's main UI is usable, including if readiness arrives before
+  // play() has inserted the markup or while the landing is already underway.
+  function setSkipEnabled(value) {
+    skipEnabled = Boolean(value)
+    const hint = petDoc && petDoc.getElementById('escHint')
+    if (hint) hint.hidden = !skipEnabled
+  }
+
   // Swaps her clip for the exit clip in the same CHAR_BOX slot, with no
   // fade: build-transition.sh lines exit.mov up on awakening.mov's own last
   // frame (position, scale, colour, the chest star), so
   // the swap is invisible. Falls back to the plain ending (the CORE_MS
   // timeout below posts 'done') if the pet was never confirmed ready.
-  // She leaps out right across the top-right corner: the Esc hint goes first
-  // (Esc itself keeps working until the very end).
-  function hideEscHint(document) {
-    const hint = document.getElementById('escHint')
-    if (!hint) return
-    if (frozen) hint.style.display = 'none'
-    else hint.classList.add('off')
-  }
-
   // Puts the exit clip in her slot UNDER her current clip (both fill the
   // slot; the later sibling paints on top), so her last frame covers it
   // until it has a frame of its own.
@@ -845,7 +846,6 @@ ${ESC_HINT}`
   function handOff(document) {
     if (!petReady() || ended) return
     ended = true
-    hideEscHint(document)
     mountExit(document)
     // Her clip keeps its last frame on screen until the exit clip has really
     // presented its first one: emptying the slot first left a frame or two
@@ -891,9 +891,13 @@ ${ESC_HINT}`
     root.setTimeout(releaseScene, (exitClip.duration || 0) * 1000 + 1000)
   }
 
-  // Reveals landing.mov at the rect's own derived canvas and plays it
-  // through to her landed, neutral pose; posts 'landed' once it is there
-  // (never 'done' on this path -- see play()).
+  function drawLanding(document, ms) {
+    const shadow = document.getElementById('landingShadow')
+    if (shadow) shadow.style.opacity = String(landingShadowOpacity(ms))
+  }
+
+  // Play the whole descent, landing pose and rise to standing. Only the
+  // movie's natural end reveals the pet and starts its five-second idle wait.
   function landingOn(document) {
     const { left, top, width, height } = landingLayout(petRect)
     const wrap = document.getElementById('landingWrap')
@@ -913,18 +917,33 @@ ${ESC_HINT}`
       shadow.style.height = `${rect.height}px`
       shadow.style.transition = 'none'
       shadow.style.opacity = '0'
-      // A recording sets it per frame instead (seek(): landingShadowOpacity);
-      // this wall-clock timer would run ahead of its slow snapshots.
-      root.setTimeout(() => {
-        if (frozen) return
-        shadow.style.transition = 'opacity .3s linear'
-        shadow.style.opacity = '1'
-      }, LANDING_TOUCHDOWN_MS)
     }
     slot.innerHTML = ''
     slot.appendChild(landingClip)
-    landingClip.play().catch(error => post(`note: landing clip did not play: ${error && error.message}`))
-    landingClip.addEventListener('ended', () => post('landed'), { once: true })
+    drawLanding(document, 0)
+    if (frozen) return
+    let landed = false
+    const finish = () => {
+      if (frozen || landed) return
+      landed = true
+      landingClip.pause()
+      drawLanding(document, landingClip.duration * 1000)
+      post('landed')
+    }
+    const frameTimed = typeof landingClip.requestVideoFrameCallback === 'function'
+    const step = (_now, frame) => {
+      if (frozen || landed) return
+      const ms = (frameTimed ? frame.mediaTime : landingClip.currentTime) * 1000
+      drawLanding(document, ms)
+      if (frameTimed) landingClip.requestVideoFrameCallback(step)
+      else root.requestAnimationFrame(step)
+    }
+    if (frameTimed) landingClip.requestVideoFrameCallback(step)
+    else root.requestAnimationFrame(step)
+    landingClip.addEventListener('ended', finish, { once: true })
+    landingClip.play().catch(error => {
+      post(`note: landing clip did not play: ${error && error.message}`)
+    })
   }
 
   async function play(document) {
@@ -932,6 +951,7 @@ ${ESC_HINT}`
     const stage = document.getElementById('stage')
     stage.innerHTML = introMarkup(introText(new Date()), Boolean(clip))
     petDoc = document
+    setSkipEnabled(skipEnabled)
     playStartedAt = Date.now()
     if (clip) {
       stage.querySelector('.moving').replaceWith(clip)
@@ -994,9 +1014,9 @@ ${ESC_HINT}`
           await seekVideo(exitClip, Math.max(0, Math.min(exitClip.duration || 0, (ms - coreEnd) / 1000)))
         } else if (ms >= landingAt) {
           if (root.document.getElementById('landingWrap').style.display !== 'block') landingOn(root.document)
-          const shadow = root.document.getElementById('landingShadow')
-          if (shadow) shadow.style.opacity = String(landingShadowOpacity(ms - landingAt))
-          await seekVideo(landingClip, Math.max(0, Math.min(landingClip.duration || 0, (ms - landingAt) / 1000)))
+          const landingMs = Math.max(0, ms - landingAt)
+          await seekVideo(landingClip, Math.min(landingClip.duration || 0, landingMs / 1000))
+          drawLanding(root.document, landingMs)
         }
       } else {
         await seekVideo(clip, Math.max(0, Math.min(clip.duration || 0, (ms - CLIP_AT_MS) / 1000)))
@@ -1007,8 +1027,9 @@ ${ESC_HINT}`
 
   const api = {
     DURATION_MS, CORE_MS, HOLD_AT_MS, SCENE_CLOSE_MS, PET_CONFIRM_BY_MS, petConfirmable, LINES, NIGHT_LINES, CLIP, CLIP_AT_MS, EXIT_CLIP, LANDING_CLIP,
-    PET_BOX, LANDING_BOX, LANDING_TOUCHDOWN_MS, landingShadowOpacity, PEAK, RIGHT,
-    introText, introMarkup, layout, landingLayout, petShadowLayout, sceneMs, setPet, prepare, play, seek,
+    PET_BOX, LANDING_BOX, LANDING_TOUCHDOWN_MS, landingShadowOpacity,
+    PEAK, RIGHT,
+    introText, introMarkup, layout, landingLayout, petShadowLayout, sceneMs, setPet, setSkipEnabled, prepare, play, seek,
   }
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.CodexIntro = api

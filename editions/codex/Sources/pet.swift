@@ -377,6 +377,7 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
   private lazy var earlyManifest = readBundledPetManifest()
 
   private var holdingForIntro = false
+  private var introResetPending = false
   private var visible = false
   private var lastHiddenReason: String?
   private var nextShowFade = 0.2
@@ -502,24 +503,58 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
   // The pet must not appear while this Codex launch's intro is playing.
   func holdForIntro() {
+    revealSerial += 1
+    onPainted = nil
     holdingForIntro = true
+    introResetPending = true
     evaluate()
+    prepareIntroIfReady()
+  }
+
+  private func prepareIntroIfReady() {
+    guard ready, introResetPending else { return }
+    introResetPending = false
+    webView?.evaluateJavaScript("CodexPet.prepareForIntro()")
   }
 
   // Lets the intro (or AppDelegate, for the "already running" startup case)
   // reveal the pet with a specific one-shot fade; afterwards fades go back
   // to the normal 0.2s show/hide used for every later appearance.
   func reveal(fade: Double, onPainted: (() -> Void)? = nil) {
+    revealSerial += 1
+    let serial = revealSerial
     holdingForIntro = false
     nextShowFade = fade
     self.onPainted = onPainted
     evaluate()
+    guard onPainted != nil else { return }
+    // Keep the landing frame until the idle video is actually presented.
+    // On slow decoders the already-decoded standing poster is a safe
+    // fallback, but it must also get a paint before the intro disappears.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+      guard let self, self.revealSerial == serial, self.onPainted != nil else { return }
+      guard self.visible else { return self.completeReveal(serial) }
+      guard let webView = self.webView else { return self.completeReveal(serial) }
+      Log.write("pet: waiting for idle frame; confirming standing poster")
+      webView.evaluateJavaScript("CodexPet.confirmPosterPainted()") { [weak self] _, error in
+        guard let self, self.revealSerial == serial, let error else { return }
+        Log.write("pet: poster confirmation failed: \(error.localizedDescription)")
+        self.completeReveal(serial)
+      }
+    }
   }
 
   // One-shot: called once the page reports it has drawn after being shown
   // (pet.js setVisible posts 'painted'), so the intro's last frame can stay
   // up until she is really on screen here.
   private var onPainted: (() -> Void)?
+  private var revealSerial = 0
+
+  private func completeReveal(_ serial: Int) {
+    guard serial == revealSerial, let callback = onPainted else { return }
+    onPainted = nil
+    callback()
+  }
 
   // The pet's clip-frame rect in the Codex window's own top-left
   // coordinates, for CodexIntro.setPet -- nil until geometry is known.
@@ -739,6 +774,9 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
       // The startup reading may have landed before this page existed; hand
       // it over again now, or her first click shows no quota.
       sendQuota()
+      // A cold launch can hold the intro before the page has loaded. Reset
+      // here as well so its first reveal gets the same standing entrance.
+      prepareIntroIfReady()
       evaluate()
     case "hit":
       lastHitInside = body["inside"] as? Bool ?? false
@@ -753,10 +791,9 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
       // handling isn't reliable while the panel never becomes key.
       Log.write("pet: menu requested at \(body["x"] ?? "?"),\(body["y"] ?? "?")")
     case "painted":
-      if let callback = onPainted {
-        onPainted = nil
+      if onPainted != nil {
         Log.write("pet: painted")
-        callback()
+        completeReveal(revealSerial)
       }
     case "log":
       Log.write("pet: \(body["text"] ?? "")")
@@ -936,6 +973,7 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
       return
     }
     if holdingForIntro { hide("入场动画播放中"); return }
+    guard ready else { hide("宠物页面正在加载"); return }
     let enabled = UserDefaults.standard.object(forKey: "petEnabled") as? Bool ?? true
     guard enabled else { hide("用户已关闭桌面宠物"); return }
     if let snoozeUntil = UserDefaults.standard.object(forKey: "petSnoozeUntil") as? Double,
@@ -971,11 +1009,16 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     lastHiddenReason = nil
     if visible { return }
     visible = true
-    panel.alphaValue = 0
-    panel.orderFrontRegardless()
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = fade
-      panel.animator().alphaValue = 1
+    if fade == 0 {
+      panel.alphaValue = 1
+      panel.orderFrontRegardless()
+    } else {
+      panel.alphaValue = 0
+      panel.orderFrontRegardless()
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = fade
+        panel.animator().alphaValue = 1
+      }
     }
     Log.write("pet: shown (fade \(fade)s)")
     webView?.evaluateJavaScript("CodexPet.setVisible(true)")
@@ -1022,7 +1065,10 @@ final class PetController: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         NSAnimationContext.runAnimationGroup({ context in
           context.duration = 0.2
           panel.animator().alphaValue = 0
-        }, completionHandler: { [weak panel] in panel?.orderOut(nil) })
+        }, completionHandler: { [weak self, weak panel] in
+          guard let self, !self.visible else { return }
+          panel?.orderOut(nil)
+        })
       }
     } else if reason != lastHiddenReason {
       Log.write("pet: stays hidden (\(reason))")
@@ -1245,7 +1291,8 @@ final class PetSnapshotPlayer: NSObject, WKScriptMessageHandler, WKNavigationDel
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-    webView.evaluateJavaScript("CodexPet.start(\(petStartOptions(reducedMotion: false, autoplay: true)))")
+    let autoplay = !ProcessInfo.processInfo.arguments.contains("--entrance")
+    webView.evaluateJavaScript("CodexPet.start(\(petStartOptions(reducedMotion: false, autoplay: autoplay)))")
   }
 
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -1255,6 +1302,7 @@ final class PetSnapshotPlayer: NSObject, WKScriptMessageHandler, WKNavigationDel
   func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
     guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
     if type == "ready" { onReady() } else if type == "error" { giveUp("\(body["message"] ?? "")") }
+    else if type == "painted" { Log.write("pet-snapshot: painted at \(Date().timeIntervalSince(began))s") }
   }
 
   // A page that never becomes ready (no clips built yet, a media error)
@@ -1271,6 +1319,14 @@ final class PetSnapshotPlayer: NSObject, WKScriptMessageHandler, WKNavigationDel
     guard !readied else { return }
     readied = true
     if let viewportJS { webView?.evaluateJavaScript(viewportJS) }
+    // Exercise the hidden prebuffer/reveal path without restarting Codex.
+    let revealDelay = ProcessInfo.processInfo.arguments.contains("--entrance") ? 0.5 : 0.0
+    if revealDelay > 0 {
+      webView?.evaluateJavaScript("CodexPet.prepareForIntro()")
+      DispatchQueue.main.asyncAfter(deadline: .now() + revealDelay) { [weak self] in
+        self?.webView?.evaluateJavaScript("CodexPet.setVisible(true)")
+      }
+    }
     // Each scripted clip (and the mid-run click's reaction) may first wait
     // up to one idle loop for a safe hand-over frame, so budget for that
     // too -- otherwise the last ones are cut off by the end of the run.
@@ -1302,6 +1358,13 @@ final class PetSnapshotPlayer: NSObject, WKScriptMessageHandler, WKNavigationDel
       ]
       if let data = try? JSONSerialization.data(withJSONObject: quota), let jsonText = String(data: data, encoding: .utf8) {
         webView?.evaluateJavaScript("CodexPet.setQuota(\(jsonText))")
+      }
+    }
+    // Preview the real bubble before the mid-run quota click, without
+    // shortening the normal 45–90 second interval in the installed app.
+    if ProcessInfo.processInfo.arguments.contains("--chatter") {
+      DispatchQueue.main.asyncAfter(deadline: .now() + revealDelay + 0.3) { [weak self] in
+        self?.webView?.evaluateJavaScript("CodexPet.chatter()")
       }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + total / 2) { [weak self] in self?.webView?.evaluateJavaScript("CodexPet.click()") }

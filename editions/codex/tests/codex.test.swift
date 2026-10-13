@@ -21,6 +21,45 @@ check((weekly["windows"] as! [Any]).count == 1, "weekly-only plan must never inv
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: folder) }
+let launchedAt = Date(timeIntervalSince1970: 1_800_000_000)
+func readyLine(at: Date, appearance: String = "primary", visible: Bool = true) -> String {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return "\(formatter.string(from: at)) info [electron-message-handler] [startup][renderer] app routes mounted after 7000ms rendererWebContentsId=1 rendererWindowAppearance=\(appearance) rendererWindowFocused=true rendererWindowId=1 rendererWindowVisible=\(visible)"
+}
+let mounted = readyLine(at: launchedAt.addingTimeInterval(7))
+check(CodexAppReadiness.isReadyLine(mounted, launchedAt: launchedAt), "visible primary routes confirm application readiness")
+check(!CodexAppReadiness.isReadyLine(readyLine(at: launchedAt.addingTimeInterval(-7)), launchedAt: launchedAt), "PID reuse must not accept an earlier process's ready log")
+check(!CodexAppReadiness.isReadyLine(readyLine(at: launchedAt.addingTimeInterval(7), appearance: "avatarOverlay"), launchedAt: launchedAt), "pet and secondary renderers cannot unlock Esc")
+check(!CodexAppReadiness.isReadyLine(readyLine(at: launchedAt.addingTimeInterval(7), visible: false), launchedAt: launchedAt), "a prewarmed hidden primary renderer cannot unlock Esc")
+check(!CodexAppReadiness.isReadyLine("2027-01-15T08:00:00.000Z info [window-manager] window ready-to-show appearance=primary", launchedAt: launchedAt), "Electron's empty window shell is not application readiness")
+
+let logDate = DateFormatter()
+logDate.timeZone = TimeZone(secondsFromGMT: 0)
+logDate.locale = Locale(identifier: "en_US_POSIX")
+logDate.dateFormat = "yyyy/MM/dd"
+let logFolder = folder.appendingPathComponent(logDate.string(from: launchedAt))
+try FileManager.default.createDirectory(at: logFolder, withIntermediateDirectories: true)
+let oldProcess = logFolder.appendingPathComponent("codex-desktop-session-123-t0-i1-000000-0.log")
+let worker = logFolder.appendingPathComponent("codex-desktop-session-456-t1-i1-000000-0.log")
+let mainProcess = logFolder.appendingPathComponent("codex-desktop-session-456-t0-i1-000000-0.log")
+try (mounted + "\n").write(to: oldProcess, atomically: true, encoding: .utf8)
+try (mounted + "\n").write(to: worker, atomically: true, encoding: .utf8)
+let readiness = CodexAppReadiness(pid: 456, launchedAt: launchedAt, logs: folder)
+check(!readiness.poll(at: launchedAt), "another process or worker's ready event must not unlock Esc")
+try (readyLine(at: launchedAt.addingTimeInterval(-7)) + "\n").write(to: mainProcess, atomically: true, encoding: .utf8)
+check(!readiness.poll(at: launchedAt), "the current filename can contain an older PID's log")
+let readyHandle = try FileHandle(forWritingTo: mainProcess)
+try readyHandle.seekToEnd()
+let halfReady = mounted.count / 2
+try readyHandle.write(contentsOf: Data(mounted.prefix(halfReady).utf8))
+check(!readiness.poll(at: launchedAt), "partial renderer event must wait for its complete line")
+try readyHandle.write(contentsOf: Data((String(mounted.dropFirst(halfReady)) + "\n").utf8))
+try readyHandle.close()
+check(readiness.poll(at: launchedAt.addingTimeInterval(86400)), "a complete current-process event must unlock, including after midnight")
+try FileManager.default.removeItem(at: mainProcess)
+check(readiness.poll(at: launchedAt.addingTimeInterval(86400)), "confirmed readiness persists for the lifetime of the intro")
+
 let parent = folder.appendingPathComponent("old-chat.jsonl")
 let child = folder.appendingPathComponent("child.jsonl")
 let longChild = folder.appendingPathComponent("long-child.jsonl")

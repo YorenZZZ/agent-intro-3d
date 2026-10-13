@@ -30,10 +30,14 @@
   // `transition` durations below).
   const POSE_CHANCE = 0.3
   const MIN_POSE_GAP = 25000
+  const INTRO_IDLE_MS = 5000
   const LEAD = 2
   const BLEND = 0.2
   const BUBBLE_SECONDS = 8
   const BUBBLE_MARGIN = 6
+  const CHATTER_MIN_MS = 45000
+  const CHATTER_MAX_MS = 90000
+  const CHATTER_SECONDS = 7
 
   const QUOTA_HEADER = 'Codex 订阅额度'
   const NO_DATA_TEXT = '正在查询订阅额度…'
@@ -52,6 +56,32 @@
   // ---------------------------------------------------------------------
   // Pure helpers: no DOM, so the node test suite can drive them directly.
   // ---------------------------------------------------------------------
+
+  function randomChatterDelay(rng = Math.random) {
+    return CHATTER_MIN_MS + Math.floor(clamp(rng(), 0, 1) * (CHATTER_MAX_MS - CHATTER_MIN_MS))
+  }
+
+  // Work through a shuffled bag before repeating; even the boundary between
+  // two bags cannot immediately repeat the last line from the previous bag.
+  function createChatterPicker(lines, rng = Math.random) {
+    const pool = [...new Set((Array.isArray(lines) ? lines : []).filter(line => typeof line === 'string' && line.trim()))]
+    let bag = []
+    let last = null
+    return () => {
+      if (!pool.length) return null
+      if (!bag.length) {
+        bag = pool.slice()
+        for (let i = bag.length - 1; i > 0; i--) {
+          const j = Math.min(i, Math.floor(clamp(rng(), 0, 1) * (i + 1)))
+          ;[bag[i], bag[j]] = [bag[j], bag[i]]
+        }
+        const end = bag.length - 1
+        if (end > 0 && bag[end] === last) [bag[0], bag[end]] = [bag[end], bag[0]]
+      }
+      last = bag.pop()
+      return last
+    }
+  }
 
   // Decodes one hit-test cell from clips.json's `mask`: entry k covers
   // frames [k*every, (k+1)*every), each a cols*rows bit grid, row-major,
@@ -180,6 +210,19 @@
   let playbackBegun = false
   let videosFailed = false
   let dom = {}
+  let playbackVisible = false
+  let playbackEpoch = 0
+  let introIdlePending = false
+  let randomAllowedAt = -Infinity
+  let introIdleTimer = 0
+  let posterTimer = 0
+  let firstFrameVideo = null
+  let firstFrameHandler = null
+  let idlePrepared = false
+  let entranceFrameReady = false
+  let visibilityEpoch = 0
+  let paintedEpoch = -1
+  const wiredVideos = new WeakSet()
 
   let front = null
   let back = null
@@ -199,12 +242,15 @@
   const playQueue = []
   const schedState = { lastPoseName: null, lastPoseAt: -Infinity }
 
-  let bubbleMode = null // null | 'quota' | 'say'
+  let bubbleMode = null // null | 'quota' | 'say' | 'chatter'
   let bubbleSayText = ''
   let bubbleSeconds = BUBBLE_SECONDS
   let bubbleTimer = 0
   let lastQuota = null
   let lastInside = false
+  let chatterTimer = 0
+  let pickChatter = null
+  let chatterBox = null
 
   // The panel is sized to the full, unclipped clip frame (so the page's own
   // layout/scale never changes), but Swift may host it inside a SMALLER
@@ -228,7 +274,7 @@
   }
 
   function insideBubble(x, y) {
-    if (!bubbleMode || !dom.bubble || !dom.bubble.classList.contains('visible')) return false
+    if (!bubbleMode || bubbleMode === 'chatter' || !dom.bubble || !dom.bubble.classList.contains('visible')) return false
     const rect = dom.bubble.getBoundingClientRect()
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
   }
@@ -291,11 +337,38 @@
 
   // --- speech bubble ---
 
+  function scheduleChatter() {
+    root.clearTimeout(chatterTimer)
+    chatterTimer = 0
+    if (!playbackVisible || bubbleMode || !pickChatter) return
+    chatterTimer = root.setTimeout(() => {
+      chatterTimer = 0
+      if (!chatter()) scheduleChatter()
+    }, randomChatterDelay())
+  }
+
+  // Uses the quota's bubble and anchor; quota always replaces it immediately.
+  // Also exposed for the off-screen snapshot preview, without shorter live timers.
+  function chatter() {
+    if (!playbackVisible || bubbleMode || !pickChatter || !dom.bubble) return false
+    const line = pickChatter()
+    if (!line) return false
+    bubbleMode = 'chatter'
+    bubbleSayText = line
+    bubbleSeconds = CHATTER_SECONDS
+    return showBubble()
+  }
+
   function renderBubble() {
-    if (!dom.bubble) return
-    if (bubbleMode === 'say') {
+    if (!dom.bubble) return false
+    if (bubbleMode === 'chatter') {
+      dom.bubble.classList.add('chatter')
+      dom.bubble.innerHTML = `<div class="chat-line">${escape(bubbleSayText)}<div class="tail"></div></div>`
+    } else if (bubbleMode === 'say') {
+      dom.bubble.classList.remove('chatter')
       dom.bubble.innerHTML = `<div class="qp"><div class="row plain">${escape(bubbleSayText)}</div><div class="tail"></div></div>`
     } else {
+      dom.bubble.classList.remove('chatter')
       const info = formatQuota(lastQuota, new Date())
       if (info.empty) {
         dom.bubble.innerHTML = `<div class="qp"><div class="hd">${escape(info.header)}</div>` +
@@ -312,24 +385,41 @@
 
       }
     }
-    positionBubble()
+    return positionBubble()
   }
 
   function positionBubble() {
-    if (!dom.bubble || !manifest) return
+    if (!dom.bubble || !manifest) return false
+    const chatting = bubbleMode === 'chatter'
+    const visibleRect = viewport || { left: 0, top: 0, width: root.innerWidth, height: root.innerHeight }
+    dom.bubble.style.maxWidth = chatting ? `${Math.max(0, Math.min(230, visibleRect.width - BUBBLE_MARGIN * 2))}px` : ''
     const size = dom.bubble.getBoundingClientRect()
+    const box = chatting ? chatterBox : manifest.box
+    const frame = frameRect()
+    const tailGap = chatting ? 18 : 10
     const layout = layoutBubble({
-      box: manifest.box,
-      frame: frameRect(),
+      box,
+      frame,
       width: size.width || 220,
       height: size.height || 80,
-      viewport: viewport || { left: 0, top: 0, width: root.innerWidth, height: root.innerHeight },
+      viewport: visibleRect,
       margin: BUBBLE_MARGIN,
+      tailGap,
     })
+    // Do not squeeze a passing remark onto her head in a clipped window.
+    // Reserve the highest silhouette across poses so a raised wrench cannot
+    // pass through the line while it is visible. It stays in the quota area.
+    if (chatting && (size.width > visibleRect.width - BUBBLE_MARGIN * 2 ||
+      layout.top + size.height + tailGap > frame.top + box[1] * frame.height ||
+      layout.top + size.height + 7 > visibleRect.top + visibleRect.height - BUBBLE_MARGIN)) {
+      hideBubble()
+      return false
+    }
     dom.bubble.style.left = `${layout.left}px`
     dom.bubble.style.top = `${layout.top}px`
     const tail = dom.bubble.querySelector('.tail')
     if (tail) tail.style.left = `${layout.tailX}px`
+    return true
   }
 
   // Swift calls this whenever the panel's on-screen (possibly sidebar-
@@ -347,15 +437,19 @@
   }
 
   function showBubble() {
-    renderBubble()
+    root.clearTimeout(chatterTimer)
+    chatterTimer = 0
+    if (!renderBubble()) return false
     if (dom.bubble) dom.bubble.classList.add('visible')
     scheduleAutohide()
+    return true
   }
 
   function hideBubble() {
     root.clearTimeout(bubbleTimer)
     bubbleMode = null
     if (dom.bubble) dom.bubble.classList.remove('visible')
+    scheduleChatter()
   }
 
   // A click anywhere outside her (Swift's global mouse monitor: Codex's
@@ -365,7 +459,7 @@
   }
 
   function toggleBubble() {
-    if (bubbleMode) { hideBubble(); return }
+    if (bubbleMode && bubbleMode !== 'chatter') { hideBubble(); return }
     bubbleMode = 'quota'
     bubbleSeconds = BUBBLE_SECONDS
     showBubble()
@@ -396,8 +490,10 @@
 
   // --- clip hand-over (ported from hero-runtime.ts; see file header) ---
 
-  function load(video, name) {
+  function load(video, name, random = false) {
     video.dataset.clip = name
+    video.dataset.queued = ''
+    video.dataset.random = String(random)
     delete video.dataset.cued
     video.src = `clips/${fileOf(name)}`
     video.load()
@@ -405,6 +501,11 @@
 
   function cued(video) {
     return 'cued' in video.dataset && !video.seeking && video.readyState >= 3
+  }
+
+  function loadNext(video) {
+    const next = decideNext()
+    load(video, next.name, next.random)
   }
 
   // What plays next once the current clip is done (no reaction queued): a
@@ -416,40 +517,55 @@
       const name = pendingReaction
       pendingReaction = null
       forcedNext = 'idle'
-      return manifest.clips[name] ? name : 'idle'
+      return { name: manifest.clips[name] ? name : 'idle', random: false }
     }
     while (playQueue.length) {
-      const name = playQueue.shift()
-      if (manifest.clips[name]) return name
+      const next = playQueue.shift()
+      if (manifest.clips[next.name] && (!next.random || next.name !== schedState.lastPoseName)) return next
     }
     if (forcedNext) {
       const name = forcedNext
       forcedNext = null
-      return name
+      return { name, random: false }
     }
-    if (currentKind === 'pose' || currentKind === 'reaction') return 'idle'
-    return pickNext({ lastKind: currentKind, lastPoseName: schedState.lastPoseName, lastPoseAt: schedState.lastPoseAt }, manifest.clips, nowMs(), Math.random)
+    if (currentKind === 'pose' || currentKind === 'reaction' || nowMs() < randomAllowedAt) return { name: 'idle', random: false }
+    const name = pickNext({ lastKind: currentKind, lastPoseName: schedState.lastPoseName, lastPoseAt: schedState.lastPoseAt }, manifest.clips, nowMs(), Math.random)
+    return { name, random: kindOf(name) === 'pose' }
   }
 
   function handOff() {
-    if (handing || !front || !back) return
+    if (!playbackVisible || handing || !front || !back) return
+    // The outgoing video remains in the spare slot during its crossfade.
+    // It has already played, so it cannot be consumed or re-queued again.
+    if (!('queued' in back.dataset)) { due = true; return }
+    // A random choice may have waited behind a click or an explicit action.
+    // Recheck against what actually played, not just the earlier dice roll.
+    if (back.dataset.random === 'true' && back.dataset.clip === schedState.lastPoseName) {
+      loadNext(back)
+      due = true
+      return
+    }
     if (!cued(back)) { due = true; return }
     due = false
     handing = true
     const incoming = back
     const outgoing = front
+    const epoch = playbackEpoch
     incoming.play().then(() => {
+      if (epoch !== playbackEpoch) return
       handing = false
+      if (!playbackVisible) { incoming.pause(); due = true; return }
       incoming.dataset.front = ''
+      delete incoming.dataset.queued
       delete outgoing.dataset.front
       const finishedName = outgoing.dataset.clip
       if (kindOf(finishedName) === 'pose') {
-        schedState.lastPoseName = finishedName
         schedState.lastPoseAt = nowMs()
       }
       front = incoming
       back = outgoing
       currentKind = kindOf(front.dataset.clip)
+      if (currentKind === 'pose') schedState.lastPoseName = front.dataset.clip
       handoffTargetFrame = manifest.clips[front.dataset.clip].to - LEAD
       // The queued clip has arrived: it plays out in full and is followed by
       // idle (its kind), instead of being re-aimed at its own safe frame or
@@ -466,10 +582,11 @@
       watch(front)
       root.clearTimeout(queuedTimer)
       queuedTimer = root.setTimeout(() => {
+        if (epoch !== playbackEpoch) return
         outgoing.pause()
-        load(outgoing, decideNext())
+        loadNext(outgoing)
       }, BLEND * 2000 + 100)
-    }, () => { handing = false })
+    }, () => { if (epoch === playbackEpoch) handing = false })
   }
 
   function reached(video, timeSeconds) {
@@ -482,6 +599,7 @@
     const token = ++watching
     const step = (_now, meta) => {
       if (token !== watching) return
+      if (video === firstFrameVideo && firstFrameHandler) firstFrameHandler()
       reached(video, meta.mediaTime)
       video.requestVideoFrameCallback(step)
     }
@@ -515,9 +633,12 @@
     // Nothing else is left to show her: bring the poster back rather than
     // leave a blank panel.
     if (dom.poster) dom.poster.style.display = ''
+    notifyPainted(true)
   }
 
   function wireVideo(video) {
+    if (wiredVideos.has(video)) return
+    wiredVideos.add(video)
     video.muted = true
     video.addEventListener('loadedmetadata', onMeta)
     video.addEventListener('seeked', onSeeked)
@@ -544,7 +665,9 @@
     // (rolled by pickNext, or queued by play()) goes back to the head of the
     // queue so it still plays after this one, rather than silently vanishing.
     const displaced = back.dataset.clip
-    if (displaced && displaced !== name && kindOf(displaced) !== 'idle') playQueue.unshift(displaced)
+    if ('queued' in back.dataset && displaced && displaced !== name && kindOf(displaced) !== 'idle') {
+      playQueue.unshift({ name: displaced, random: back.dataset.random === 'true' })
+    }
     load(back, name)
     const frontMeta = manifest.clips[front.dataset.clip]
     const frameNow = Math.max(0, Math.round(front.currentTime * manifest.fps))
@@ -556,10 +679,44 @@
   // replacing it (queueClip's own interrupt-at-a-safe-frame rule otherwise).
   function play(name) {
     if (pendingReaction && pendingReaction !== name && manifest && manifest.clips[name]) {
-      if (!playQueue.includes(name)) playQueue.push(name)
+      const queued = playQueue.find(next => next.name === name)
+      if (queued) queued.random = false // an explicit replay is intentional
+      else playQueue.push({ name, random: false })
       return
     }
     queueClip(name)
+  }
+
+  // Buffer and seek while the complete entrance is playing. The five-second
+  // standing hold still starts only on reveal, and no hidden clip is played.
+  function prepareIdle() {
+    if (reducedMotionMode || videosFailed || !manifest || !manifest.clips.idle || !dom.videoA || !dom.videoB) return
+    for (const video of [dom.videoA, dom.videoB]) {
+      wireVideo(video)
+      load(video, 'idle')
+    }
+    idlePrepared = true
+  }
+
+  function notifyPainted(posterFallback = false) {
+    if (!playbackVisible || typeof root.requestAnimationFrame !== 'function' ||
+      (!posterFallback && !entranceFrameReady && !reducedMotionMode && !videosFailed)) return
+    const epoch = visibilityEpoch
+    const paint = callback => root.requestAnimationFrame(callback)
+    paint(() => paint(() => {
+      if (!playbackVisible || epoch !== visibilityEpoch || paintedEpoch === epoch) return
+      paintedEpoch = epoch
+      post({ type: 'painted' })
+    }))
+  }
+
+  // Native's slow-decoder fallback keeps a known, decoded standing image.
+  // An unpresented video is still opacity:0; only its real frame callback
+  // can make it cover the poster, so a timeout never exposes a black layer.
+  function confirmPosterPainted() {
+    if (!playbackVisible || !dom.poster) return
+    if (!entranceFrameReady) dom.poster.style.display = ''
+    notifyPainted(true)
   }
 
   function beginPlayback() {
@@ -571,9 +728,11 @@
     wireVideo(front)
     wireVideo(back)
     currentKind = 'idle'
-    load(front, 'idle')
+    if (!idlePrepared) load(front, 'idle')
+    delete front.dataset.queued
     handoffTargetFrame = manifest.clips.idle.to - LEAD
-    load(back, decideNext())
+    if (!idlePrepared) loadNext(back)
+    idlePrepared = false
     // The very first clip must not show before its first frame is actually
     // presented (otherwise the poster would blink to black beneath it);
     // every later hand-over already has the outgoing clip still fully
@@ -585,36 +744,113 @@
     // poster shows straight through as a second, ghost figure the moment any
     // pose (sit/feet/snap/click) diverges from that neutral pose -- this is
     // the "she appears twice" bug: the poster was simply never hidden.
+    const initial = front
+    const epoch = playbackEpoch
     const onFirstFrame = () => {
-      front.removeEventListener('playing', onFirstFrame)
-      front.dataset.front = ''
-      root.setTimeout(() => { if (dom.poster) dom.poster.style.display = 'none' }, BLEND * 1000 + 50)
+      if (epoch !== playbackEpoch || !playbackVisible) return
+      initial.removeEventListener('playing', onFirstFrame)
+      firstFrameVideo = firstFrameHandler = null
+      initial.dataset.front = ''
+      posterTimer = root.setTimeout(() => {
+        if (epoch !== playbackEpoch) return
+        if (!videosFailed && dom.poster) dom.poster.style.display = 'none'
+        entranceFrameReady = true
+        notifyPainted()
+      }, BLEND * 1000 + 50)
     }
-    front.addEventListener('playing', onFirstFrame)
-    front.play().catch(error => post({ type: 'error', message: `video did not play: ${error && error.message}` }))
+    firstFrameVideo = initial
+    firstFrameHandler = onFirstFrame
+    // `playing` is a playback-state event, not proof that WebKit has
+    // composited the first HEVC-alpha frame. watch() supplies that proof.
+    if (!frameTimed) initial.addEventListener('playing', onFirstFrame)
+    initial.play().catch(error => {
+      if (epoch === playbackEpoch) post({ type: 'error', message: `video did not play: ${error && error.message}` })
+    })
     watch(front)
+  }
+
+  // The companion page outlives Codex launches. An intro is a fresh entrance,
+  // not a resume of whichever pose was paused when Codex last closed. Native
+  // code calls this while the panel is hidden, once per intro; ordinary
+  // occlusion and window movement still resume their current clip.
+  function prepareForIntro() {
+    playbackEpoch++
+    visibilityEpoch++
+    entranceFrameReady = idlePrepared = false
+    watching++
+    root.clearTimeout(queuedTimer)
+    root.clearTimeout(posterTimer)
+    root.clearTimeout(introIdleTimer)
+    root.clearTimeout(chatterTimer)
+    chatterTimer = 0
+    if (firstFrameVideo && firstFrameHandler) firstFrameVideo.removeEventListener('playing', firstFrameHandler)
+    firstFrameVideo = firstFrameHandler = null
+    for (const video of [dom.videoA, dom.videoB]) {
+      if (!video) continue
+      video.pause()
+      delete video.dataset.front
+      delete video.dataset.cued
+      delete video.dataset.queued
+    }
+    front = back = null
+    playbackBegun = playbackVisible = handing = due = false
+    currentKind = 'idle'
+    handoffTargetFrame = Infinity
+    pendingReaction = forcedNext = null
+    playQueue.length = 0
+    // A fresh entrance clears pending work, but keeps the last performed
+    // pose so the first new random action cannot repeat it.
+    schedState.lastPoseAt = -Infinity
+    introIdlePending = true
+    randomAllowedAt = Infinity
+    if (dom.poster) dom.poster.style.display = ''
+    dismiss()
+    prepareIdle()
+  }
+
+  function startIntroIdle() {
+    if (!introIdlePending) return
+    introIdlePending = false
+    randomAllowedAt = nowMs() + INTRO_IDLE_MS
+    const epoch = playbackEpoch
+    // At five seconds, prepare the next random action in time for the
+    // standing idle's natural end (six seconds in the shipped clip). Explicit
+    // clicks/queued clips retain priority, even during these first seconds.
+    introIdleTimer = root.setTimeout(() => {
+      if (epoch !== playbackEpoch || nowMs() < randomAllowedAt) return
+      if (!front || !back || handing || due || pendingReaction || forcedNext || playQueue.length) return
+      if (currentKind === 'idle' && back.dataset.clip === 'idle') loadNext(back)
+    }, INTRO_IDLE_MS)
   }
 
   function setVisible(value) {
     const visible = Boolean(value)
-    // Tells the app once this page has drawn for the panel just ordered in,
-    // so the intro keeps its landing frame up until then instead of leaving
-    // a frame or more with neither of them on screen (a dark blink).
-    if (visible && typeof root.requestAnimationFrame === 'function') {
-      root.requestAnimationFrame(() => root.requestAnimationFrame(() => post({ type: 'painted' })))
-    }
+    const wasVisible = playbackVisible
+    if (visible !== wasVisible) visibilityEpoch++
+    playbackVisible = visible
+    if (!visible) {
+      root.clearTimeout(chatterTimer)
+      chatterTimer = 0
+      if (bubbleMode === 'chatter') hideBubble()
+    } else if (!wasVisible) scheduleChatter()
+    // Fresh playback reports only after the real video frame and fade-in.
+    // A resumed pet or reduced-motion poster can acknowledge immediately.
+    if (visible) notifyPainted()
     if (reducedMotionMode) return
     if (!visible) {
+      watching++
       if (front) front.pause()
       if (back) back.pause()
       return
     }
+    startIntroIdle()
     if (!playbackBegun) { beginPlayback(); return }
     if (front && front.ended) {
       if (cued(back)) handOff()
       else due = true
     } else if (front) {
       front.play().catch(() => {})
+      watch(front)
     }
   }
 
@@ -645,8 +881,8 @@
       }
     })
     if (dom.bubble) {
-      dom.bubble.addEventListener('mouseenter', () => root.clearTimeout(bubbleTimer))
-      dom.bubble.addEventListener('mouseleave', scheduleAutohide)
+      dom.bubble.addEventListener('mouseenter', () => { if (bubbleMode !== 'chatter') root.clearTimeout(bubbleTimer) })
+      dom.bubble.addEventListener('mouseleave', () => { if (bubbleMode && bubbleMode !== 'chatter') scheduleAutohide() })
     }
   }
 
@@ -677,20 +913,31 @@
     }
     return fetchManifest(opts.manifest).then(data => {
       manifest = data
+      pickChatter = Array.isArray(root.CodexPetLines) && root.CodexPetLines.length
+        ? createChatterPicker(root.CodexPetLines) : null
+      chatterBox = manifest.box.slice()
+      for (const clip of Object.values(manifest.clips)) {
+        const mask = clip.mask
+        if (!mask || !mask.cols || !mask.rows || !Array.isArray(mask.frames)) continue
+        for (const hex of mask.frames) {
+          const first = hex.search(/[1-9a-f]/i)
+          if (first >= 0) chatterBox[1] = Math.min(chatterBox[1], Math.floor(first * 4 / mask.cols) / mask.rows)
+        }
+      }
       doc.documentElement.style.setProperty('--ar', `${manifest.size[0]} / ${manifest.size[1]}`)
       doc.documentElement.style.setProperty('--span', `${Number(opts.bubbleSpan) || 0}px`)
       layoutShadow()
       if (dom.poster) dom.poster.src = 'clips/poster.png'
       const ready = dom.poster && dom.poster.decode ? dom.poster.decode().catch(() => {}) : Promise.resolve()
       return ready.then(() => {
+        if (introIdlePending) prepareIdle()
         post({ type: 'ready', size: manifest.size, box: manifest.box })
         bindInput()
         if (reducedMotionMode) {
           if (dom.videoA) dom.videoA.style.display = 'none'
           if (dom.videoB) dom.videoB.style.display = 'none'
-        } else if (opts.autoplay) {
-          beginPlayback()
         }
+        if (opts.autoplay) setVisible(true)
       })
     }).catch(error => {
       post({ type: 'error', message: String((error && error.message) || error) })
@@ -698,9 +945,10 @@
   }
 
   const api = {
-    POSE_CHANCE, MIN_POSE_GAP, LEAD, BLEND,
+    POSE_CHANCE, MIN_POSE_GAP, INTRO_IDLE_MS, LEAD, BLEND,
+    CHATTER_MIN_MS, CHATTER_MAX_MS, CHATTER_SECONDS, randomChatterDelay, createChatterPicker,
     escape, maskHit, nextSafeFrame, pickNext, formatReset, formatQuota, layoutBubble,
-    start, setVisible, pointer, click, dismiss, setQuota, setQuotaEnabled, showQuota, say, play, setViewport,
+    start, prepareForIntro, setVisible, confirmPosterPainted, pointer, click, dismiss, setQuota, setQuotaEnabled, showQuota, say, chatter, play, setViewport,
   }
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.CodexPet = api

@@ -59,8 +59,23 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
 /* The speech bubble, in BUBBLE_SPACE above her head. Position (left/top) is
    set inline by pet.js from layoutBubble(); only opacity/transform fade. */
 #bubble { position: absolute; width: max-content; max-width: 260px; opacity: 0; transform: translateY(6px);
-  transition: opacity .2s linear, transform .2s linear; pointer-events: auto; }
-#bubble.visible { opacity: 1; transform: none; }
+  transition: opacity .2s linear, transform .2s linear; pointer-events: none; }
+#bubble.visible { opacity: 1; transform: none; pointer-events: auto; }
+/* Her remarks share the quota HUD's materials and bubble slot, showing only
+   the spoken line. Casual remarks pass clicks through in both CSS and the
+   native hit-test bridge. */
+#bubble.chatter { pointer-events: none; border-radius: 3px; box-shadow: var(--bubble-shadow); }
+.chat-line { position: relative; box-sizing: border-box; border-radius: 3px;
+  padding: 10px 12px 12px; border: 1px solid var(--bubble-border);
+  background: var(--bubble-bg); color: var(--bubble-text);
+  font: 13px/1.65 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  overflow-wrap: anywhere; }
+.chat-line::after { content: ''; position: absolute; top: -1px; right: -1px;
+  width: 9px; height: 9px; border-top: 2px solid var(--bubble-accent);
+  border-right: 2px solid var(--bubble-accent); border-top-right-radius: 3px; }
+.chat-line .tail { position: absolute; bottom: -5px; width: 10px; height: 10px;
+  transform: translateX(-50%) rotate(45deg); background: var(--bubble-bg);
+  border-right: 1px solid var(--bubble-border); border-bottom: 1px solid var(--bubble-border); }
 .qp { position: relative; background: var(--bubble-bg); border: 1px solid var(--bubble-border);
   border-radius: 3px; padding: 10px 12px; box-shadow: var(--bubble-shadow);
   font: 12px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', sans-serif;
@@ -85,7 +100,10 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
 .qp .ft { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--bubble-border); font-size: 10px; color: var(--bubble-text-dim); }
 .qp .tail { position: absolute; bottom: -5px; width: 10px; height: 10px; transform: translateX(-50%) rotate(45deg);
   background: var(--bubble-bg); border-right: 1px solid var(--bubble-border); border-bottom: 1px solid var(--bubble-border); }
-@media (prefers-reduced-motion: reduce) { .clip-video { display: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .clip-video { display: none; }
+  #bubble { transition: none; transform: none; }
+}
 </style>
 </head>
 <body>
@@ -98,6 +116,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
 <video id="videoB" class="clip-video" muted playsinline preload="auto"></video>
 </div>
 </div>
+<script src="chatter-lines.js"></script>
 <script src="pet.js"></script>
 </body>
 </html>

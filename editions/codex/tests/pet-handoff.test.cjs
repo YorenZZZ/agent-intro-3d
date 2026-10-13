@@ -51,34 +51,66 @@ function makeElement(tag, id, calls) {
   el.getBoundingClientRect = () => ({ left: 0, top: 0, width: 120, height: 160 })
   el.querySelector = sel => (sel === '.tail' ? (el._tail || (el._tail = { style: {} })) : null)
   if (tag === 'video') {
+    let frameId = 0
+    const frameCallbacks = new Map()
     Object.assign(el, {
       src: '', currentTime: 0, paused: true, ended: false, seeking: false, readyState: 0, muted: false,
       load() { calls.loadCalls.push({ id, clip: el.dataset.clip }) },
       play() { calls.playCalls.push({ id, clip: el.dataset.clip }); el.paused = false; return Promise.resolve() },
       pause() { calls.pauseCalls.push({ id, clip: el.dataset.clip }); el.paused = true },
-      requestVideoFrameCallback(cb) { el._rvfc = cb },
+      _frameCallbacks: frameCallbacks,
+      requestVideoFrameCallback(cb) { const id = ++frameId; frameCallbacks.set(id, cb); return id },
+      cancelVideoFrameCallback(id) { frameCallbacks.delete(id) },
     })
   }
   if (tag === 'img') el.decode = () => Promise.resolve()
   return el
 }
 
-// pet.js's own setTimeout/clearTimeout, replaced with a queue the test fires
-// by hand instead of real wall-clock time (the only delay it ever schedules
-// is the constant BLEND*2000+100ms "load the spare element now" timer, plus
-// the bubble's 8s auto-hide -- neither needs to elapse for real).
+// Playback, fade and standing-hold timers run against a controllable clock.
 function makeClock() {
   let nextId = 1
+  let now = 1000000
   const timers = new Map()
   return {
-    setTimeout(fn) { const id = nextId++; timers.set(id, fn); return id },
+    get now() { return now },
+    setTimeout(fn, ms = 0) { const id = nextId++; timers.set(id, { fn, at: now + ms }); return id },
     clearTimeout(id) { timers.delete(id) },
     fireAll() {
       for (const id of [...timers.keys()]) {
-        const fn = timers.get(id)
+        const timer = timers.get(id)
         timers.delete(id)
-        if (fn) fn()
+        if (timer) timer.fn()
       }
+    },
+    advance(ms) {
+      const until = now + ms
+      while (true) {
+        const next = [...timers.entries()].filter(([, timer]) => timer.at <= until).sort((a, b) => a[1].at - b[1].at)[0]
+        if (!next) break
+        const [id, timer] = next
+        timers.delete(id)
+        now = timer.at
+        timer.fn()
+      }
+      now = until
+    },
+  }
+}
+
+// A callback scheduled during a frame belongs to the next compositor frame,
+// so a double rAF acknowledgement cannot accidentally complete in one step.
+function makeAnimationFrames(clock) {
+  let nextId = 1
+  const callbacks = new Map()
+  return {
+    request(fn) { const id = nextId++; callbacks.set(id, fn); return id },
+    cancel(id) { callbacks.delete(id) },
+    capture() { return [...callbacks.values()] },
+    step() {
+      const pending = [...callbacks.values()]
+      callbacks.clear()
+      pending.forEach(fn => fn(clock.now))
     },
   }
 }
@@ -87,6 +119,7 @@ function createHarness() {
   const calls = { loadCalls: [], playCalls: [], pauseCalls: [] }
   const messages = []
   const clock = makeClock()
+  const raf = makeAnimationFrames(clock)
   const elements = {}
   const el = (tag, id) => (elements[id] = makeElement(tag, id, calls))
 
@@ -104,8 +137,11 @@ function createHarness() {
   sandbox.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(JSON.parse(JSON.stringify(manifestData))) })
   sandbox.setTimeout = (fn, ms) => clock.setTimeout(fn, ms)
   sandbox.clearTimeout = id => clock.clearTimeout(id)
+  sandbox.requestAnimationFrame = fn => raf.request(fn)
+  sandbox.cancelAnimationFrame = id => raf.cancel(id)
   sandbox.webkit = { messageHandlers: { pet: { postMessage: msg => messages.push(msg) } } }
   sandbox.console = console
+  sandbox.Date = class extends Date { static now() { return clock.now } }
 
   vm.createContext(sandbox)
   // Keep every idle-vs-pose dice roll on "idle" so only the clip under test
@@ -115,9 +151,10 @@ function createHarness() {
   vm.runInContext(petSource, sandbox, { filename: petPath })
 
   const setFetch = fetch => { sandbox.fetch = fetch }
+  const setRandom = value => { vm.runInContext(`Math.random = () => ${Number(value)}`, sandbox) }
   return {
-    api: sandbox.CodexPet, calls, messages, clock, manifest: manifestData,
-    videoA: elements.videoA, videoB: elements.videoB, poster: elements.poster, bubble: elements.bubble, setFetch,
+    api: sandbox.CodexPet, calls, messages, clock, raf, manifest: manifestData,
+    videoA: elements.videoA, videoB: elements.videoB, poster: elements.poster, bubble: elements.bubble, setFetch, setRandom,
   }
 }
 
@@ -140,10 +177,12 @@ function cueBack(video) {
 // exactly as a real <video> firing rVFC would.
 function deliverFrame(video, frame, fps) {
   video.currentTime = frame / fps
-  const cb = video._rvfc
-  video._rvfc = null
-  if (cb) cb(0, { mediaTime: video.currentTime })
+  const callbacks = [...video._frameCallbacks.values()]
+  video._frameCallbacks.clear()
+  callbacks.forEach(cb => cb(0, { mediaTime: video.currentTime }))
 }
+
+const paintedMessages = h => h.messages.filter(message => message.type === 'painted')
 
 test('the poster is hidden for good after the first clip frame presents, so a later pose never shows a ghost of her neutral standing pose behind it (regression for the "double figure" bug)', async () => {
   const h = createHarness()
@@ -156,8 +195,10 @@ test('the poster is hidden for good after the first clip frame presents, so a la
   // fades in (see the stylesheet comment by #poster/.clip-video).
   assert.notEqual(poster.style.display, 'none', 'poster still covers the gap before the first frame presents')
 
-  videoA.fire('playing') // the browser just presented idle's first frame
-  assert.equal(videoA.dataset.front, '', 'the first clip is front immediately on "playing"')
+  videoA.fire('playing') // playback state is not proof that a decoded frame was composited
+  assert.equal(videoA.dataset.front, undefined, 'playing alone must not expose an undecoded video')
+  deliverFrame(videoA, 0, h.manifest.fps)
+  assert.equal(videoA.dataset.front, '', 'the first clip is front once its actual first frame is delivered')
   // Hiding is deferred to let the CSS crossfade (BLEND = 0.2s) actually run;
   // hiding it mid-fade would flash the transparent stage background instead
   // of the smooth poster-to-video handover the comment there describes.
@@ -181,7 +222,7 @@ test('a video failure brings the poster back rather than leaving a blank panel',
   await h.api.start({ autoplay: true, reducedMotion: false })
   await flush()
   const { videoA, poster } = h
-  videoA.fire('playing')
+  deliverFrame(videoA, 0, h.manifest.fps)
   h.clock.fireAll()
   assert.equal(poster.style.display, 'none', 'hidden once real playback is under way')
 
@@ -441,6 +482,112 @@ test('a click never swallows the pose that was already lined up next: it plays a
   assert.equal(videoB.dataset.clip, 'idle', 'and idle follows the pose')
 })
 
+test('a click during the outgoing fade cannot queue the pose that just finished for a second time', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  const { videoA, videoB } = h
+  const fps = h.manifest.fps
+
+  h.api.play('feet')
+  cueBack(videoB)
+  deliverFrame(videoA, h.manifest.clips.idle.to, fps)
+  await flush()
+  h.clock.advance(500)
+  cueBack(videoA)
+  deliverFrame(videoB, h.manifest.clips.feet.to, fps)
+  await flush()
+  assert.equal(videoA.dataset.front, '', 'feet has finished and idle is now front')
+
+  // The old feet element remains underneath idle during the fade; it is
+  // not an unplayed next action, even though its dataset still names feet.
+  h.api.click()
+  cueBack(videoB)
+  deliverFrame(videoA, h.manifest.clips.idle.to, fps)
+  await flush()
+  h.clock.advance(500)
+  assert.equal(videoB.dataset.clip, 'click', 'the requested reaction plays')
+  assert.equal(videoA.dataset.clip, 'idle', 'the finished feet pose must not be resurrected behind the reaction')
+  cueBack(videoA)
+  deliverFrame(videoB, h.manifest.clips.click.to, fps)
+  await flush()
+  assert.equal(h.calls.playCalls.filter(call => call.clip === 'feet').length, 1)
+})
+
+test('successive random poses differ even across the intervening standing loops', async () => {
+  const h = createHarness()
+  h.setRandom(0)
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  let front = h.videoA
+  let back = h.videoB
+  const poses = []
+
+  for (let transition = 0; transition < 18 && poses.length < 6; transition++) {
+    h.clock.advance(h.api.MIN_POSE_GAP + 1)
+    cueBack(back)
+    deliverFrame(front, h.manifest.clips[front.dataset.clip].to, h.manifest.fps)
+    await flush()
+    ;[front, back] = [back, front]
+    if (h.manifest.clips[front.dataset.clip].kind === 'pose') {
+      assert.notEqual(front.dataset.clip, poses.at(-1), 'standing between actions must not erase the previous pose')
+      poses.push(front.dataset.clip)
+    }
+    h.clock.advance(500)
+  }
+
+  assert.equal(poses.length, 6, 'the test must actually play several random poses')
+})
+
+test('a fresh intro retains the last pose actually shown when selecting its first random action', async () => {
+  const h = createHarness()
+  h.setRandom(0)
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  cueBack(h.videoB)
+  deliverFrame(h.videoA, h.manifest.clips.idle.to, h.manifest.fps)
+  await flush()
+  assert.equal(h.videoB.dataset.clip, 'sit')
+  assert.equal(h.videoB.dataset.front, '', 'sit has actually started, not merely been preloaded')
+
+  h.api.setVisible(false)
+  h.api.prepareForIntro()
+  h.clock.advance(h.api.MIN_POSE_GAP + 1)
+  h.api.setVisible(true)
+  await flush()
+  h.clock.advance(h.api.INTRO_IDLE_MS - 1)
+  assert.equal(h.videoB.dataset.clip, 'idle', 'the complete five-second standing hold remains intact')
+  h.clock.advance(1)
+  assert.equal(h.videoB.dataset.clip, 'feet', 'the first eligible action excludes the pose shown before this intro')
+  cueBack(h.videoB)
+  deliverFrame(h.videoA, h.manifest.clips.idle.to, h.manifest.fps)
+  await flush()
+  assert.equal(h.videoB.dataset.front, '')
+  assert.equal(h.calls.playCalls.filter(call => call.clip === 'sit').length, 1)
+})
+
+test('an explicit play request may repeat a pose after returning to standing', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  const { videoA, videoB } = h
+  const fps = h.manifest.fps
+
+  h.api.play('feet')
+  cueBack(videoB)
+  deliverFrame(videoA, h.manifest.clips.idle.to, fps)
+  await flush()
+  h.clock.advance(500)
+  cueBack(videoA)
+  deliverFrame(videoB, h.manifest.clips.feet.to, fps)
+  await flush()
+  h.clock.advance(500)
+
+  h.api.play('feet')
+  cueBack(videoB)
+  deliverFrame(videoA, h.manifest.clips.idle.to, fps)
+  await flush()
+  assert.equal(videoB.dataset.front, '', 'explicit playback still takes over normally')
+  assert.equal(videoB.dataset.clip, 'feet')
+  assert.equal(h.calls.playCalls.filter(call => call.clip === 'feet').length, 2, 'the no-repeat rule only limits automatic choices')
+})
+
 test('start({manifest}) uses the manifest the app hands over and never fetches (WKWebView cannot fetch file: URLs)', async () => {
   const h = createHarness()
   let fetched = 0
@@ -467,4 +614,316 @@ test('a real quota bubble renders subscription rows and escapes labels', async (
   assert.match(h.bubble.innerHTML, /本周 &lt;script&gt;/)
   assert.match(h.bubble.innerHTML, /width:99%/)
   assert.doesNotMatch(h.bubble.innerHTML, /HolySheep|MiMo|<script>/)
+})
+
+test('an intro waits for the actual reveal, stands for five seconds, then allows the normal random next action', async () => {
+  const h = createHarness()
+  h.setRandom(0) // every permitted random roll selects sit
+  h.api.prepareForIntro() // may arrive before start() on a cold launch
+  await h.api.start({ autoplay: false, reducedMotion: false })
+  assert.deepEqual(h.calls.loadCalls, [{ id: 'videoA', clip: 'idle' }, { id: 'videoB', clip: 'idle' }], 'both idle clips begin buffering while the intro owns the screen')
+  cueBack(h.videoA)
+  cueBack(h.videoB)
+  h.clock.advance(20000) // buffering/intro time does not spend the standing hold
+  assert.equal(h.calls.playCalls.length, 0)
+  assert.equal(paintedMessages(h).length, 0, 'hidden prebuffering cannot release the landing overlay')
+
+  h.api.setVisible(true)
+  await flush()
+  assert.equal(h.calls.loadCalls.length, 2, 'reveal reuses the buffered clips without another load')
+  assert.equal(h.videoA.dataset.clip, 'idle')
+  assert.equal(h.videoB.dataset.clip, 'idle')
+  h.clock.advance(h.api.INTRO_IDLE_MS - 1)
+  assert.equal(h.videoB.dataset.clip, 'idle', 'no random pose is even queued during the standing hold')
+  h.clock.advance(1)
+  assert.equal(h.videoB.dataset.clip, 'sit', 'normal random scheduling opens after five seconds')
+  assert.ok(!h.calls.playCalls.some(call => call.clip === 'sit'), 'the next action still waits for idle to finish')
+  cueBack(h.videoB)
+  deliverFrame(h.videoA, h.manifest.clips.idle.to - h.api.LEAD, h.manifest.fps)
+  await flush()
+  assert.equal(h.videoB.dataset.front, '', 'the random pose begins at the idle boundary')
+})
+
+test('a short idle loop remains standing across multiple boundaries until the five-second intro hold expires', async () => {
+  const h = createHarness()
+  h.setRandom(0)
+  await h.api.start({ autoplay: false, reducedMotion: false })
+  h.api.prepareForIntro()
+  h.api.setVisible(true)
+  await flush()
+  const boundary = h.manifest.clips.idle.to - h.api.LEAD
+  cueBack(h.videoB)
+  h.clock.advance(2000)
+  deliverFrame(h.videoA, boundary, h.manifest.fps)
+  await flush()
+  h.clock.advance(500) // the spare clip is prepared after the crossfade
+  assert.equal(h.videoA.dataset.clip, 'idle')
+  cueBack(h.videoA)
+  h.clock.advance(1499)
+  deliverFrame(h.videoB, boundary, h.manifest.fps)
+  await flush()
+  h.clock.advance(500)
+  assert.ok(h.calls.playCalls.every(call => call.clip === 'idle'), 'all playback before five seconds stays standing')
+  h.clock.advance(501)
+  assert.equal(h.videoB.dataset.clip, 'sit')
+})
+
+test('a new intro discards a previously seated pose and its queued actions, while ordinary hide/show preserves them', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  h.api.play('sit')
+  cueBack(h.videoB)
+  deliverFrame(h.videoA, h.manifest.clips.idle.to, h.manifest.fps)
+  await flush()
+  h.videoB.currentTime = 2
+  h.api.setVisible(false)
+  const beforeResume = h.calls.loadCalls.length
+  h.api.setVisible(true)
+  assert.equal(h.videoB.currentTime, 2, 'an ordinary show resumes the same pose frame')
+  assert.equal(h.calls.loadCalls.length, beforeResume, 'ordinary show does not reload or reset clips')
+
+  h.api.play('feet')
+  h.api.play('snap')
+  h.api.setVisible(false)
+  h.api.prepareForIntro()
+  assert.notEqual(h.poster.style.display, 'none', 'the standing poster covers the hidden reset')
+  const afterReset = h.calls.loadCalls.length
+  h.clock.advance(20000)
+  assert.equal(h.calls.loadCalls.length, afterReset, 'old timers cannot refill the queue during the intro')
+  h.api.setVisible(true)
+  await flush()
+  assert.equal(h.videoA.dataset.clip, 'idle')
+  assert.equal(h.videoB.dataset.clip, 'idle')
+  assert.equal(h.videoB.dataset.front, undefined, 'the old seated video is no longer front')
+  assert.ok(h.calls.loadCalls.slice(afterReset).every(call => call.clip === 'idle'), 'no stale explicit action survives the entrance reset')
+})
+
+test('a handoff promise completed after an intro reset cannot restore the old pose or schedule more work', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  deliverFrame(h.videoA, 0, h.manifest.fps)
+  let finishOldPlay
+  h.videoB.play = () => {
+    h.calls.playCalls.push({ id: 'videoB', clip: h.videoB.dataset.clip })
+    h.videoB.paused = false
+    return new Promise(resolve => { finishOldPlay = resolve })
+  }
+  h.api.play('sit')
+  cueBack(h.videoB)
+  deliverFrame(h.videoA, h.manifest.clips.idle.to, h.manifest.fps)
+  assert.equal(typeof finishOldPlay, 'function', 'the old sit handoff is in flight')
+  h.api.prepareForIntro()
+  h.api.setVisible(true)
+  deliverFrame(h.videoA, 0, h.manifest.fps)
+  const loadsAfterReset = h.calls.loadCalls.length
+  finishOldPlay()
+  await flush()
+  h.clock.advance(1000)
+  assert.equal(h.videoA.dataset.front, '', 'new standing playback remains front')
+  assert.equal(h.videoB.dataset.front, undefined, 'the stale promise cannot bring sit back')
+  assert.equal(h.calls.loadCalls.length, loadsAfterReset, 'the stale promise cannot schedule a follow-up load')
+})
+
+test('a reset cancels the old first-frame poster timer and explicit clicks still respond during the standing hold', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  deliverFrame(h.videoA, 0, h.manifest.fps)
+  h.api.prepareForIntro()
+  h.clock.advance(1000)
+  assert.notEqual(h.poster.style.display, 'none', 'the old fade completion cannot hide the reset poster')
+  h.api.setVisible(true)
+  h.api.click()
+  assert.equal(h.videoB.dataset.clip, 'click', 'a user click is allowed immediately')
+  cueBack(h.videoB)
+  deliverFrame(h.videoA, h.manifest.clips.idle.to, h.manifest.fps)
+  await flush()
+  assert.equal(h.videoB.dataset.front, '', 'the explicit reaction plays within the five-second hold')
+})
+
+test('temporary occlusion during the intro standing hold does not restart its five-second clock', async () => {
+  const h = createHarness()
+  h.setRandom(0)
+  await h.api.start({ autoplay: false, reducedMotion: false })
+  h.api.prepareForIntro()
+  h.api.setVisible(true)
+  h.clock.advance(2000)
+  h.api.setVisible(false)
+  h.clock.advance(1000)
+  h.api.setVisible(true)
+  h.clock.advance(1999)
+  assert.equal(h.videoB.dataset.clip, 'idle')
+  h.clock.advance(1)
+  assert.equal(h.videoB.dataset.clip, 'sit', 'the original reveal owns the deadline')
+})
+
+test('a slow first decoded frame keeps the landing overlay until the video fade and two compositor frames finish', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  h.videoA.fire('playing')
+  h.api.setVisible(true) // a repeated native show is not a painted frame either
+  h.clock.advance(1200)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0, 'a decoder taking longer than 500 ms must not release the intro')
+  assert.equal(h.videoA.dataset.front, undefined, 'the undecoded video stays transparent')
+  assert.notEqual(h.poster.style.display, 'none', 'the poster still covers first-frame decoding')
+
+  deliverFrame(h.videoA, h.manifest.clips.idle.from, h.manifest.fps)
+  assert.equal(h.videoA.dataset.front, '', 'an actual presented video frame starts the fade')
+  h.clock.advance(249)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0, 'a presented frame alone does not end the CSS fade')
+  assert.notEqual(h.poster.style.display, 'none')
+  h.clock.advance(1)
+  assert.equal(h.poster.style.display, 'none', 'the poster leaves after the 250 ms fade')
+  assert.equal(paintedMessages(h).length, 0, 'the frame must also survive compositor scheduling')
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0, 'one animation frame is not sufficient')
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 1, 'only the fully presented idle releases the landing overlay')
+})
+
+test('a warm intro starts buffering idle while hidden and preserves that buffer through reveal', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: false, reducedMotion: false })
+  h.api.prepareForIntro()
+  assert.equal(h.videoA.dataset.clip, 'idle')
+  assert.equal(h.videoB.dataset.clip, 'idle')
+  assert.equal(h.calls.loadCalls.length, 2)
+  assert.equal(h.calls.playCalls.length, 0, 'preparation only loads/seeks, never advances the idle clip')
+  cueBack(h.videoA)
+  cueBack(h.videoB)
+  assert.ok(h.videoA.currentTime >= h.manifest.clips.idle.from / h.manifest.fps && h.videoA.currentTime < (h.manifest.clips.idle.from + 1) / h.manifest.fps, 'metadata seeks the prebuffered front within its first used frame')
+  const bufferedTime = h.videoA.currentTime
+  h.clock.advance(20000)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0)
+  h.api.setVisible(true)
+  await flush()
+  assert.equal(h.calls.loadCalls.length, 2, 'reveal must not reset the decoder that was prepared during the intro')
+  assert.equal(h.videoA.currentTime, bufferedTime)
+  assert.equal(h.calls.playCalls.length, 1)
+  assert.equal(h.calls.playCalls[0].clip, 'idle')
+})
+
+test('a first-frame callback delivered after hiding cannot paint, but resuming still waits for a fresh frame', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  const staleFrames = [...h.videoA._frameCallbacks.values()]
+  h.api.setVisible(false)
+  staleFrames.forEach(callback => callback(0, { mediaTime: 1 / h.manifest.fps }))
+  h.videoA.fire('playing')
+  h.clock.advance(1000)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0)
+  assert.equal(h.videoA.dataset.front, undefined, 'a delayed hidden frame cannot reveal an unready front')
+
+  h.api.setVisible(true)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0, 'showing again still needs an actual frame')
+  deliverFrame(h.videoA, h.manifest.clips.idle.from, h.manifest.fps)
+  h.clock.advance(250)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 1, 'the resumed clip can complete its fresh handshake')
+})
+
+test('an old first-frame callback cannot finish a new intro after a reset', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  const staleFrames = [...h.videoA._frameCallbacks.values()]
+  h.api.prepareForIntro()
+  h.api.setVisible(true)
+  staleFrames.forEach(callback => callback(0, { mediaTime: 1 / h.manifest.fps }))
+  h.clock.advance(1000)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0, 'callbacks from the old entrance cannot release the new one')
+  assert.equal(h.videoA.dataset.front, undefined)
+  assert.notEqual(h.poster.style.display, 'none')
+
+  deliverFrame(h.videoA, h.manifest.clips.idle.from, h.manifest.fps)
+  h.clock.advance(250)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 1)
+})
+
+test('a hide or intro reset between compositor frames invalidates the pending painted acknowledgement', async () => {
+  for (const change of ['hide', 'reset']) {
+    const h = createHarness()
+    await h.api.start({ autoplay: true, reducedMotion: false })
+    deliverFrame(h.videoA, h.manifest.clips.idle.from, h.manifest.fps)
+    h.clock.advance(250)
+    h.raf.step()
+    const staleCompositorCallbacks = h.raf.capture()
+    assert.ok(staleCompositorCallbacks.length, 'the second compositor frame has been queued')
+    if (change === 'hide') h.api.setVisible(false)
+    else {
+      h.api.prepareForIntro()
+      h.api.setVisible(true)
+    }
+    staleCompositorCallbacks.forEach(callback => callback(h.clock.now))
+    assert.equal(paintedMessages(h).length, 0, `${change} must invalidate the pending acknowledgement`)
+  }
+})
+
+test('a first-frame fade finishing while hidden cannot release the landing overlay', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  deliverFrame(h.videoA, h.manifest.clips.idle.from, h.manifest.fps)
+  h.clock.advance(249)
+  h.api.setVisible(false)
+  h.clock.advance(1000)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0)
+  h.api.setVisible(true)
+  deliverFrame(h.videoA, h.manifest.clips.idle.from, h.manifest.fps)
+  h.clock.advance(250)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 1, 'a subsequent visible frame can still release the intro')
+})
+
+test('reduced motion and a failed decoder acknowledge the visible poster after two compositor frames', async () => {
+  for (const reducedMotion of [true, false]) {
+    const h = createHarness()
+    await h.api.start({ autoplay: true, reducedMotion })
+    if (!reducedMotion) h.videoA.fire('error')
+    assert.notEqual(h.poster.style.display, 'none', 'the poster is the visible fallback')
+    assert.equal(paintedMessages(h).length, 0)
+    h.raf.step()
+    assert.equal(paintedMessages(h).length, 0)
+    h.raf.step()
+    assert.equal(paintedMessages(h).length, 1, `${reducedMotion ? 'reduced motion' : 'video failure'} must not strand the intro overlay`)
+  }
+})
+
+test('the slow-decoder fallback confirms a painted poster without exposing an unready video', async () => {
+  const h = createHarness()
+  await h.api.start({ autoplay: true, reducedMotion: false })
+  h.clock.advance(2000)
+  h.raf.step()
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0, 'elapsed time alone cannot prove that anything painted')
+  h.api.confirmPosterPainted()
+  assert.equal(h.videoA.dataset.front, undefined, 'the fallback keeps the undecoded video transparent')
+  assert.notEqual(h.poster.style.display, 'none', 'the fallback keeps the standing poster visible')
+  assert.equal(paintedMessages(h).length, 0)
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 0)
+  h.raf.step()
+  assert.equal(paintedMessages(h).length, 1, 'the explicit fallback still waits for the poster to paint')
+
+  deliverFrame(h.videoA, h.manifest.clips.idle.from, h.manifest.fps)
+  assert.equal(h.videoA.dataset.front, '', 'the eventual decoded video starts its normal fade')
+  h.clock.advance(249)
+  assert.notEqual(h.poster.style.display, 'none', 'the fallback poster continues to cover the fade')
+  h.clock.advance(1)
+  assert.equal(h.poster.style.display, 'none', 'normal playback takes over once the fade ends')
 })
