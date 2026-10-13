@@ -23,6 +23,24 @@ try FileManager.default.createDirectory(at: folder, withIntermediateDirectories:
 defer { try? FileManager.default.removeItem(at: folder) }
 let parent = folder.appendingPathComponent("old-chat.jsonl")
 let child = folder.appendingPathComponent("child.jsonl")
+let longChild = folder.appendingPathComponent("long-child.jsonl")
+let longParent = folder.appendingPathComponent("long-parent.jsonl")
+let partialChild = folder.appendingPathComponent("partial-child.jsonl")
+let oversizedChild = folder.appendingPathComponent("oversized-child.jsonl")
+let invalidMeta = folder.appendingPathComponent("invalid-meta.jsonl")
+func metadata(source: Any, padding: Int) throws -> String {
+  let data = try JSONSerialization.data(withJSONObject: ["type": "session_meta", "payload": [
+    "source": source, "instructions": String(repeating: "x", count: padding)
+  ]])
+  return String(data: data, encoding: .utf8)! + "\n"
+}
+let childSource = ["subagent": ["thread_spawn": [:]]] as [String: Any]
+let longChildMeta = try metadata(source: childSource, padding: 32768)
+try longChildMeta.write(to: longChild, atomically: true, encoding: .utf8)
+try metadata(source: "vscode", padding: 32768).write(to: longParent, atomically: true, encoding: .utf8)
+try String(longChildMeta.prefix(17000)).write(to: partialChild, atomically: true, encoding: .utf8)
+try metadata(source: childSource, padding: 1024 * 1024).write(to: oversizedChild, atomically: true, encoding: .utf8)
+try "{\"type\":\"session_meta\",\"payload\":{}}\n".write(to: invalidMeta, atomically: true, encoding: .utf8)
 let stale = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3600))
 try "{\"type\":\"session_meta\",\"payload\":{\"source\":\"vscode\"}}\n{\"type\":\"event_msg\",\"timestamp\":\"\(stale)\",\"payload\":{\"type\":\"task_complete\"}}\n".write(to: parent, atomically: true, encoding: .utf8)
 try "{\"type\":\"session_meta\",\"payload\":{\"source\":{\"subagent\":{\"thread_spawn\":{}}}}}\n".write(to: child, atomically: true, encoding: .utf8)
@@ -39,6 +57,16 @@ func append(_ text: String, to file: URL) throws {
 }
 try append(event + "\n", to: child)
 check(!watcher.poll(), "child completion must not pop a bubble")
+try append(event + "\n", to: longChild)
+check(!watcher.poll(), "a child header longer than 16 KiB must still suppress completions")
+try append(String(longChildMeta.dropFirst(17000)) + event + "\n", to: partialChild)
+check(!watcher.poll(), "a partial metadata line must wait for completion and remain a child session")
+try append(event + "\n", to: oversizedChild)
+try append(event + "\n", to: invalidMeta)
+check(!watcher.poll(), "oversized or unclassified metadata must not be mistaken for parent sessions")
+try append(event + "\n", to: longParent)
+check(watcher.poll(), "a parent header longer than 16 KiB must still observe completions")
+check(!watcher.poll(), "long parent completions must be observed only once")
 try append(String(event.prefix(event.count / 2)), to: parent)
 check(!watcher.poll(), "partial JSON line must wait")
 try append(String(event.dropFirst(event.count / 2)) + "\n", to: parent)

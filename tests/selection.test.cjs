@@ -69,6 +69,27 @@ test('interactive choice, remembered default, switching, and independent pet rou
   assert.equal(fs.existsSync(path.join(clone, 'editions', 'codex', 'asset.bin')), true)
 })
 
+for (const selected of ['codex', 'claude']) {
+  test(`updating codex to ${selected} does not download new assets for the unselected edition`, t => {
+    const { source, clone } = fixture(t)
+    run(clone, 'bash', ['pull.sh', 'codex', '--no-update'])
+    for (const edition of ['codex', 'claude']) {
+      fs.writeFileSync(path.join(source, 'editions', edition, 'asset.bin'), `updated-${edition}-video-data`)
+    }
+    run(source, 'git', ['add', '.'])
+    run(source, 'git', ['commit', '-m', 'Update both editions'])
+    run(source, 'git', ['push'])
+
+    run(clone, 'bash', ['pull.sh', selected])
+    assert.equal(fs.readFileSync(path.join(clone, 'editions', selected, 'asset.bin'), 'utf8'), `updated-${selected}-video-data`)
+    const unselected = selected === 'codex' ? 'claude' : 'codex'
+    assert.equal(fs.existsSync(path.join(clone, 'editions', unselected, 'asset.bin')), false)
+    const missing = run(clone, 'git', ['rev-list', '--objects', '--missing=print', 'HEAD'])
+    const blob = run(source, 'git', ['rev-parse', `HEAD:editions/${unselected}/asset.bin`]).trim()
+    assert.ok(missing.includes(`?${blob}`), 'the updated unselected video blob must remain undownloaded')
+  })
+}
+
 test('invalid input, unavailable sources, EOF, and local edits stop safely', t => {
   const { clone } = fixture(t)
   for (const args of [['pull.sh', 'mimo'], ['build.sh', 'codex'], ['pull.sh', 'codex', '--build', '--install']]) {

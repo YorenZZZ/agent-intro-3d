@@ -2,6 +2,24 @@
 
 Codex / Claude 桌面端的机械师 3D 入场动画与侧栏宠物。原 `claude-intro-3d` 仓库延续到这里，保留 Git 历史；两个版本独立安装、独立设置，可以同时使用。
 
+## 预览与示例图
+
+| Codex 版入场 | Claude 版入场 |
+| --- | --- |
+| ![Codex 入场预览](editions/codex/docs/preview.webp) | ![Claude 入场预览](editions/claude/docs/preview.webp) |
+
+动图经过降帧、缩小和压缩，实际播放按窗口原尺寸渲染。下面保留原 Claude 版的演出截图与宠物示例；两个版本各自的介绍见 [Codex 版](editions/codex/README.md) 和 [Claude 版](editions/claude/README.md)。
+
+| 举起扳手 | 竖拇指 | 待机 |
+| --- | --- | --- |
+| ![原版举起扳手](editions/claude/docs/screenshots/screenshot-1.jpg) | ![原版竖拇指](editions/claude/docs/screenshots/screenshot-2.jpg) | ![原版待机](editions/claude/docs/screenshots/screenshot-3.jpg) |
+
+| 宠物待机 | 盘腿坐 | 看鞋 |
+| --- | --- | --- |
+| ![原版宠物待机](editions/claude/docs/pet/pet-idle.jpg) | ![原版盘腿坐](editions/claude/docs/pet/pet-sit.jpg) | ![原版看鞋](editions/claude/docs/pet/pet-feet.jpg) |
+| 打响指 | 点击回应 | 额度气泡（示例数据） |
+| ![原版打响指](editions/claude/docs/pet/pet-snap.jpg) | ![原版点击回应](editions/claude/docs/pet/pet-click.jpg) | ![Claude 额度示例](editions/claude/docs/pet/pet-quota.png) |
+
 ## 选择下载与安装
 
 macOS 14+，需要 Xcode Command Line Tools（`xcode-select --install`）。
@@ -29,7 +47,7 @@ cd agent-intro-3d
 ./pull.sh all --install      # 两个都安装
 ```
 
-`./pull.sh` 会先更新仓库，再取出所选版本的源码和视频素材。上面的部分克隆方式按需下载；只选 Codex 时，Claude 的素材不会下载，反之亦然。菜单记住上次选择，回车沿用。后续更新与切换版本继续使用 `./pull.sh`。
+`./pull.sh` 会先设定所选版本的下载范围，再更新仓库并取出对应源码和视频素材。上面的部分克隆方式按需下载；只选 Codex 时，Claude 的素材不会下载，反之亦然，更新和切换版本时也保持这一规则。菜单记住上次选择，回车沿用。后续更新与切换版本继续使用 `./pull.sh`。
 
 只下载：`./pull.sh codex`；下载并构建：`./pull.sh all --build`。已有当前版本、只想重新选择下载范围时用 `--no-update`。普通完整克隆也能使用这些命令，已经下载到 Git 对象库的内容会留在本机。
 
@@ -81,9 +99,10 @@ editions/claude/        Claude 原版源码、素材、额度插件与测试
 tests/                  菜单、按需下载、版本切换与入口测试
 ```
 
-下载全部版本后：
+下载全部版本后，补充检出根目录测试（按需下载默认只检出所选版本）：
 
 ```bash
+git sparse-checkout add tests
 node --test tests/*.test.cjs
 node --test editions/codex/tests/*.test.cjs
 node --test editions/claude/tests/*.test.cjs

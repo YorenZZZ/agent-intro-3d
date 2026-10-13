@@ -33,7 +33,7 @@ Claude Code 插件（目录名 `claude-pet-quota`，插件名 `pet-quota`：校�
 ## 安装（在终端里，不是桌面应用的 Code 标签页）
 
 ```bash
-claude plugin marketplace add <本仓库clone路径>/mod
+claude plugin marketplace add <本仓库clone路径>/editions/claude/mod
 claude plugin install pet-quota@claude-intro-3d
 ```
 
